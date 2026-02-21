@@ -9,7 +9,7 @@ REM -------- CONFIG --------
 set ENV_NAME=vton
 set PYTHON_VERSION=3.10
 
-set CATVTON_REPO=https://github.com/username/CatVTON.git
+set CATVTON_REPO=https://github.com/Zheng-Chong/CatVTON.git
 set OOTD_REPO=https://github.com/levihsu/OOTDiffusion.git
 
 set CATVTON_DIR=external\catvton

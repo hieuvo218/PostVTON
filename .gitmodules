@@ -1,0 +1,3 @@
+[submodule "external/catvton"]
+	path = external/catvton
+	url = https://github.com/Zheng-Chong/CatVTON.git
