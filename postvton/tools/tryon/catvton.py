@@ -23,7 +23,7 @@ class CatVTONInference:
     
     def __init__(
         self,
-        base_model_path: str = "booksforcharlie/stable-diffusion-inpainting",
+        base_model_path: str = "stable-diffusion-v1-5/stable-diffusion-inpainting",
         resume_path: str = "zhengchong/CatVTON",
         dataset_name: str = "dresscode",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -73,6 +73,7 @@ class CatVTONInference:
                 attn_ckpt=self._repo_path,
                 attn_ckpt_version="mix",
                 weight_dtype=self.dtype,
+                skip_safety_check=True,
                 device=self.device,
             )
             print("[CatVTON] Pipeline loaded successfully")
@@ -140,6 +141,7 @@ class CatVTONInference:
                 # AutoMasker takes person_image and mask_type ('upper', 'lower', 'overall', 'inner', 'outer')
                 mask_result = self._masker(person_image, cloth_type)
                 mask_image = mask_result['mask'] if isinstance(mask_result, dict) else mask_result
+                mask_image = self._mask_processor.blur(mask_image, blur_factor=9)
             except Exception as e:
                 print(f"[CatVTON] Warning: Masker failed, using fallback mask: {e}")
                 # Fallback: create a simple full mask
@@ -177,7 +179,6 @@ class CatVTONInference:
                     height=1024,
                     width=768,
                     generator=generator,
-                    skip_safety_check=True
                 )
             print("[CatVTON] Inference completed successfully")
         except Exception as e:
