@@ -106,7 +106,6 @@ class CatVTONInference:
         num_inference_steps: int = 50,
         guidance_scale: float = 2.5,
         seed: Optional[int] = None,
-        show_type: str = "result only"
     ) -> Image.Image:
         """
         Generate virtual try-on result
@@ -117,9 +116,6 @@ class CatVTONInference:
             num_inference_steps: Number of denoising steps
             guidance_scale: Classifier-free guidance scale
             seed: Random seed for reproducibility
-            mask_type: Type of mask for cloth-agnostic mask generation
-                     ('upper', 'lower', 'overall', 'inner', 'outer')
-            return_intermediate: Whether to return intermediate results
             
         Returns:
             Generated try-on image as PIL Image

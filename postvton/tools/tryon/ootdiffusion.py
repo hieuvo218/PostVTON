@@ -13,9 +13,9 @@ repo_id = "levihsu/OOTDiffusion"  # Example repository ID
 root_path = Path(__file__).parents[4]
 # Download the file
 # Check if the directory already exists to avoid re-downloading
-if not (root_path / "external" / "ootdiffusion").exists():
-    snapshot_download(repo_id=repo_id, local_dir=root_path/"external/ootdiffusion")
-    snapshot_download(repo_id="openai/clip-vit-large-patch14", local_dir=root_path/"external/ootdiffusion/checkpoints/clip-vit-large-patch14")
+# if not (root_path / "external" / "ootdiffusion").exists():
+#     snapshot_download(repo_id=repo_id, local_dir=root_path/"external/ootdiffusion")
+#     snapshot_download(repo_id="openai/clip-vit-large-patch14", local_dir=root_path/"external/ootdiffusion/checkpoints/clip-vit-large-patch14")
 
 # Add external OOTDiffusion to path
 project_root = Path(__file__).parent.parent.parent.parent
