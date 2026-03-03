@@ -1,0 +1,6 @@
+[submodule "external/catvton"]
+	path = external/catvton
+	url = https://github.com/Zheng-Chong/CatVTON.git
+[submodule "external/ootdiffusion"]
+	path = external/ootdiffusion
+	url = https://github.com/levihsu/OOTDiffusion.git
