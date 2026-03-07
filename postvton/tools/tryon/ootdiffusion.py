@@ -20,10 +20,15 @@ root_path = Path(__file__).parents[4]
 # Add external OOTDiffusion to path
 project_root = Path(__file__).parent.parent.parent.parent
 ootd_path = project_root / "external" / "ootdiffusion"
+humanparsing_path = ootd_path / "preprocess" / "humanparsing"
 if str(ootd_path) not in sys.path:
     sys.path.insert(0, str(ootd_path))
 if str(ootd_path / "run") not in sys.path:
     sys.path.insert(0, str(ootd_path / "run"))
+# humanparsing must precede catvton on sys.path so its utils/ package
+# takes priority over external/catvton/utils.py
+if str(humanparsing_path) not in sys.path:
+    sys.path.insert(0, str(humanparsing_path))
 
 
 class OOTDiffusionInference:
@@ -84,17 +89,29 @@ class OOTDiffusionInference:
             )
         
         try:
-            from preprocess.openpose.run_openpose import OpenPose
-            from preprocess.humanparsing.run_parsing import Parsing
-            
+            # catvton.py registers external/catvton/utils.py as sys.modules['utils']
+            # (a plain file, not a package). Humanparsing needs utils/ as a package.
+            # Temporarily evict the catvton utils so the humanparsing utils/ package
+            # can be imported cleanly, then restore afterwards.
+            _evicted = {k: sys.modules.pop(k)
+                        for k in list(sys.modules)
+                        if k == 'utils' or k.startswith('utils.')}
+
+            try:
+                from preprocess.openpose.run_openpose import OpenPose
+                from preprocess.humanparsing.run_parsing import Parsing
+            finally:
+                # Restore catvton utils so nothing else breaks
+                sys.modules.update(_evicted)
+
             if self.model_type == "hd":
                 from ootd.inference_ootd_hd import OOTDiffusionHD
             else:
                 from ootd.inference_ootd_dc import OOTDiffusionDC
-            
+
             from run.utils_ootd import get_mask_location
             self._get_mask_location = get_mask_location
-            
+
         except ImportError as e:
             raise ImportError(
                 f"Failed to import OOTDiffusion models. "
