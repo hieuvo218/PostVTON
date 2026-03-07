@@ -1,7 +1,7 @@
 import torch
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from PIL import Image
 import numpy as np
 import sys
@@ -100,8 +100,8 @@ class CatVTONInference:
     
     def generate(
         self,
-        person_image: Image.Image,
-        cloth_image: Image.Image,
+        person_image: Union[Image.Image, str],
+        cloth_image: Union[Image.Image, str],
         cloth_type: str = "upper",
         num_inference_steps: int = 50,
         guidance_scale: float = 2.5,
@@ -109,19 +109,26 @@ class CatVTONInference:
     ) -> Image.Image:
         """
         Generate virtual try-on result
-        
+
         Args:
-            person_image: PIL Image of the person
-            cloth_image: PIL Image of the garment
+            person_image: PIL Image or path to person image
+            cloth_image: PIL Image or path to garment image
+            cloth_type: Type of clothing (upper, lower, overall, inner, outer)
             num_inference_steps: Number of denoising steps
             guidance_scale: Classifier-free guidance scale
             seed: Random seed for reproducibility
-            
+
         Returns:
             Generated try-on image as PIL Image
         """
         self._load_models()
-        
+
+        # Convert string paths to PIL Images
+        if isinstance(person_image, str):
+            person_image = Image.open(person_image).convert("RGB")
+        if isinstance(cloth_image, str):
+            cloth_image = Image.open(cloth_image).convert("RGB")
+
         # Set random seed
         if seed is not None:
             torch.manual_seed(seed)
@@ -137,7 +144,9 @@ class CatVTONInference:
                 # AutoMasker takes person_image and mask_type ('upper', 'lower', 'overall', 'inner', 'outer')
                 mask_result = self._masker(person_image, cloth_type)
                 mask_image = mask_result['mask'] if isinstance(mask_result, dict) else mask_result
-                mask_image = self._mask_processor.blur(mask_image, blur_factor=9)
+                from PIL import ImageFilter
+                mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=9))
+                # mask_image = self._mask_processor.blur(mask_image, blur_factor=9)
             except Exception as e:
                 print(f"[CatVTON] Warning: Masker failed, using fallback mask: {e}")
                 # Fallback: create a simple full mask
