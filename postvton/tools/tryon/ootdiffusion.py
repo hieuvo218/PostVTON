@@ -148,7 +148,7 @@ class OOTDiffusionInference:
         person_image: Union[Image.Image, str],
         cloth_image: Union[Image.Image, str],
         category: Union[int, str] = "upperbody",
-        num_inference_steps: int = 20,
+        num_inference_steps: int = 10,
         guidance_scale: float = 2.0,
         num_samples: int = 1,
         seed: int = -1,

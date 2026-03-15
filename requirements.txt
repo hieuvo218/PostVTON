@@ -24,4 +24,6 @@ config==0.5.1
 einops
 onnxruntime
 pydantic==2.8.2
+mediapipe==0.10.21
+scikit-learn
 git+https://github.com/xinntao/BasicSR.git

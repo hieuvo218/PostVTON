@@ -103,7 +103,7 @@ class CatVTONInference:
         person_image: Union[Image.Image, str],
         cloth_image: Union[Image.Image, str],
         cloth_type: str = "upper",
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 10,
         guidance_scale: float = 2.5,
         seed: Optional[int] = None,
     ) -> Image.Image:

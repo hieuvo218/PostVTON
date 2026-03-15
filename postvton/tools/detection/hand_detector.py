@@ -5,6 +5,7 @@ and a standalone detect_hand_distortion() function for direct use.
 """
 
 import json
+import logging
 import random
 import re
 import time
@@ -13,7 +14,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,10 @@ def _call_with_key_rotation(
 
     Returns (genai response, key_used) or (None, None) on total failure.
     """
+    if genai is None:
+        logger.warning("google.generativeai is not installed; hand detection is unavailable.")
+        return None, None
+
     rate_limited: dict = {}   # key -> cooldown-until datetime
     banned: set = set()
 
@@ -195,6 +205,12 @@ class HandDistortionDetector:
             return HandDetectionResult(
                 distorted=True,
                 error=f"Image not found: {image_path}",
+            )
+
+        if genai is None:
+            return HandDetectionResult(
+                distorted=False,
+                error="google.generativeai is not installed.",
             )
 
         print(f"[HandDetector] Analysing: {path.name}")
