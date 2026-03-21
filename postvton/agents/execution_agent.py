@@ -107,6 +107,87 @@ class ExecutionAgent:
 			)
 		return self._accessory_restorer
 
+	@staticmethod
+	def _validate_image_path(image_path: str, label: str) -> Optional[str]:
+		path = Path(image_path)
+		if not path.exists():
+			return f"{label} image not found: {image_path}"
+		return None
+
+	def run_hand_refinement(
+		self,
+		tryon_image_path: str,
+		output_path: Optional[str] = None,
+		work_dir: str = "outputs/execution_agent",
+		hand_params: Optional[Dict[str, Any]] = None,
+	) -> ExecutionStepResult:
+		"""Run only the hand refinement step and return step result."""
+		error = self._validate_image_path(tryon_image_path, "Try-on")
+		if error:
+			return ExecutionStepResult(
+				name="hand_refinement",
+				success=False,
+				error=error,
+			)
+
+		tryon = Path(tryon_image_path)
+		work = Path(work_dir)
+		work.mkdir(parents=True, exist_ok=True)
+		hand_output = Path(output_path) if output_path else (work / f"{tryon.stem}_hand_refined{tryon.suffix}")
+
+		hand_refine_result = self._get_hand_refiner().refine(
+			image=str(tryon),
+			output_path=str(hand_output),
+			**dict(hand_params or {}),
+		)
+
+		return ExecutionStepResult(
+			name="hand_refinement",
+			success=hand_refine_result.success,
+			output_path=hand_refine_result.output_path,
+			error=hand_refine_result.error,
+			detail=hand_refine_result.to_dict(),
+		)
+
+	def run_accessory_restoration(
+		self,
+		original_image_path: str,
+		target_image_path: str,
+		output_path: Optional[str] = None,
+		accessory_params: Optional[Dict[str, Any]] = None,
+	) -> ExecutionStepResult:
+		"""Run only the accessory restoration step and return step result."""
+		original_error = self._validate_image_path(original_image_path, "Original")
+		if original_error:
+			return ExecutionStepResult(
+				name="accessory_restoration",
+				success=False,
+				error=original_error,
+			)
+
+		target_error = self._validate_image_path(target_image_path, "Target")
+		if target_error:
+			return ExecutionStepResult(
+				name="accessory_restoration",
+				success=False,
+				error=target_error,
+			)
+
+		accessory_result = self._get_accessory_restorer().restore(
+			source_image=original_image_path,
+			target_image=target_image_path,
+			output_path=output_path,
+			**dict(accessory_params or {}),
+		)
+
+		return ExecutionStepResult(
+			name="accessory_restoration",
+			success=accessory_result.success,
+			output_path=accessory_result.output_path,
+			error=accessory_result.error,
+			detail=accessory_result.to_dict(),
+		)
+
 	def execute(
 		self,
 		original_image_path: str,
@@ -133,21 +214,24 @@ class ExecutionAgent:
 		original = Path(original_image_path)
 		tryon = Path(tryon_image_path)
 
-		if not original.exists():
+		original_error = self._validate_image_path(original_image_path, "Original")
+		if original_error:
 			return ExecutionResult(
 				success=False,
 				original_image_path=original_image_path,
 				tryon_image_path=tryon_image_path,
 				final_output_path=None,
-				error=f"Original image not found: {original_image_path}",
+				error=original_error,
 			)
-		if not tryon.exists():
+
+		tryon_error = self._validate_image_path(tryon_image_path, "Try-on")
+		if tryon_error:
 			return ExecutionResult(
 				success=False,
 				original_image_path=original_image_path,
 				tryon_image_path=tryon_image_path,
 				final_output_path=None,
-				error=f"Try-on image not found: {tryon_image_path}",
+				error=tryon_error,
 			)
 
 		steps: List[ExecutionStepResult] = []
@@ -162,61 +246,45 @@ class ExecutionAgent:
 
 		# Step 1: hand refinement
 		if refine_hands:
-			hand_output = work / f"{tryon.stem}_hand_refined{tryon.suffix}"
-			hand_refine_result = self._get_hand_refiner().refine(
-				image=str(current_image),
-				output_path=str(hand_output),
-				**hand_params,
+			hand_step = self.run_hand_refinement(
+				tryon_image_path=str(current_image),
+				output_path=str(work / f"{tryon.stem}_hand_refined{tryon.suffix}"),
+				work_dir=work_dir,
+				hand_params=hand_params,
 			)
-			steps.append(
-				ExecutionStepResult(
-					name="hand_refinement",
-					success=hand_refine_result.success,
-					output_path=hand_refine_result.output_path,
-					error=hand_refine_result.error,
-					detail=hand_refine_result.to_dict(),
-				)
-			)
-			if not hand_refine_result.success or not hand_refine_result.output_path:
+			steps.append(hand_step)
+			if not hand_step.success or not hand_step.output_path:
 				return ExecutionResult(
 					success=False,
 					original_image_path=str(original),
 					tryon_image_path=str(tryon),
 					final_output_path=None,
 					steps=steps,
-					error=hand_refine_result.error or "Hand refinement failed.",
+					error=hand_step.error or "Hand refinement failed.",
 				)
-			current_image = Path(hand_refine_result.output_path)
+			current_image = Path(hand_step.output_path)
 			logger.info("Hand refinement completed: %s", current_image)
 
 		# Step 2: accessory restoration
 		if restore_accessories:
-			accessory_result = self._get_accessory_restorer().restore(
-				source_image=str(original),
-				target_image=str(current_image),
+			accessory_step = self.run_accessory_restoration(
+				original_image_path=str(original),
+				target_image_path=str(current_image),
 				output_path=str(final_path),
-				**accessory_params,
+				accessory_params=accessory_params,
 			)
-			steps.append(
-				ExecutionStepResult(
-					name="accessory_restoration",
-					success=accessory_result.success,
-					output_path=accessory_result.output_path,
-					error=accessory_result.error,
-					detail=accessory_result.to_dict(),
-				)
-			)
-			if not accessory_result.success:
+			steps.append(accessory_step)
+			if not accessory_step.success:
 				return ExecutionResult(
 					success=False,
 					original_image_path=str(original),
 					tryon_image_path=str(tryon),
 					final_output_path=None,
 					steps=steps,
-					error=accessory_result.error or "Accessory restoration failed.",
+					error=accessory_step.error or "Accessory restoration failed.",
 				)
 
-			resolved_output = accessory_result.output_path
+			resolved_output = accessory_step.output_path
 			if not resolved_output:
 				# Defensive fallback: restorer may be configured without output_path.
 				final_path.parent.mkdir(parents=True, exist_ok=True)
