@@ -1,0 +1,258 @@
+"""Manager agent using LangGraph for orchestration.
+
+The manager coordinates try-on generation, problem detection, planning, and
+execution in a closed-loop refinement process.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ManagerState:
+	"""Shared state for the manager graph."""
+
+	person_image: Any
+	cloth_image: Any
+	cloth_type: str
+	api_keys: List[str]
+	output_path: Optional[str] = None
+	result_dir: str = "result"
+	max_iterations: int = 2
+	iterations: int = 0
+
+	tryon_result: Optional[Any] = None
+	tryon_output_path: Optional[str] = None
+	person_image_pil: Optional[Any] = None
+	tryon_image_pil: Optional[Any] = None
+	detection_report: Optional[Any] = None
+	plan: Optional[Dict[str, Any]] = None
+	execution_result: Optional[Any] = None
+	history: List[Dict[str, Any]] = field(default_factory=list)
+
+
+class ManagerAgent:
+	"""Orchestrate agent interactions using LangGraph."""
+
+	def __init__(
+		self,
+		device: str = "cuda",
+		max_iterations: int = 2,
+	):
+		self.device = device
+		self.max_iterations = max_iterations
+
+	def build_graph(self):
+		"""Build and return the LangGraph executable graph."""
+		try:
+			from langgraph.graph import StateGraph, END
+		except Exception as exc:
+			raise ImportError(
+				"langgraph is required to use ManagerAgent. "
+				"Install it with `pip install langgraph`."
+			) from exc
+
+		graph = StateGraph(ManagerState)
+
+		graph.add_node("tryon", self._node_tryon)
+		graph.add_node("detect", self._node_detect)
+		graph.add_node("plan", self._node_plan)
+		graph.add_node("execute", self._node_execute)
+
+		graph.set_entry_point("tryon")
+		graph.add_edge("tryon", "detect")
+		graph.add_edge("detect", "plan")
+		graph.add_edge("plan", "execute")
+		graph.add_conditional_edges(
+			"execute",
+			self._should_continue,
+			{"continue": "detect", "end": END},
+		)
+
+		return graph.compile()
+
+	def run(
+		self,
+		person_image: Any,
+		cloth_image: Any,
+		cloth_type: str,
+		api_keys: List[str],
+		output_path: Optional[str] = None,
+		result_dir: str = "result",
+	) -> ManagerState:
+		"""Run the manager orchestration loop and return final state."""
+		state = ManagerState(
+			person_image=person_image,
+			cloth_image=cloth_image,
+			cloth_type=cloth_type,
+			api_keys=api_keys,
+			output_path=output_path,
+			result_dir=result_dir,
+			max_iterations=self.max_iterations,
+		)
+		graph = self.build_graph()
+		return graph.invoke(state)
+
+	# ------------------------------------------------------------------
+	# Graph nodes
+	# ------------------------------------------------------------------
+
+	def _node_tryon(self, state: ManagerState) -> ManagerState:
+		from postvton.agents.tryon_agent import TryOnAgent
+
+		agent = TryOnAgent(device=self.device)
+		result = agent.generate(
+			person_image_path=state.person_image,
+			cloth_image_path=state.cloth_image,
+			cloth_type=state.cloth_type,
+			output_path=None,
+		)
+		state.tryon_result = result
+		state.tryon_output_path = result.output_path
+		state.person_image_pil = self._to_pil(state.person_image)
+		if result.output_path:
+			state.tryon_image_pil = self._to_pil(result.output_path)
+		if state.person_image_pil is None or state.tryon_image_pil is None:
+			state.history.append({
+				"stage": "tryon",
+				"success": False,
+				"error": "Failed to load PIL images for manager pipeline.",
+			})
+			return state
+		state.history.append({"stage": "tryon", "success": result.success})
+		return state
+
+	def _node_detect(self, state: ManagerState) -> ManagerState:
+		from postvton.agents.problem_detection_agent import ProblemDetectionAgent
+
+		if not state.tryon_result or not state.tryon_result.output_path:
+			return state
+		if state.tryon_image_pil is None or state.person_image_pil is None:
+			state.history.append({
+				"stage": "detect",
+				"error": "PIL images not available for detection.",
+			})
+			return state
+
+		detector = ProblemDetectionAgent(api_keys=state.api_keys)
+		report = detector.detect(
+			image_path=state.tryon_image_pil,
+			original_image_path=state.person_image_pil,
+		)
+		state.detection_report = report
+		state.history.append({"stage": "detect", "report": report.to_dict()})
+		return state
+
+	def _node_plan(self, state: ManagerState) -> ManagerState:
+		"""Form a correction plan based on detection report.
+
+		This default planner is rule-based to avoid hard dependency on a
+		separate planning agent.
+		"""
+		report = state.detection_report
+		if report is None:
+			state.plan = {"refine_hands": False, "restore_accessories": False}
+			return state
+
+		plan = {
+			"refine_hands": bool(report.hands.distorted),
+			"restore_accessories": bool(report.accessories.missing),
+		}
+		state.plan = plan
+		state.history.append({"stage": "plan", "plan": plan})
+		return state
+
+	def _node_execute(self, state: ManagerState) -> ManagerState:
+		from postvton.agents.execution_agent import ExecutionAgent
+
+		if not state.tryon_result or not state.tryon_result.output_path:
+			return state
+		if state.tryon_image_pil is None or state.person_image_pil is None:
+			state.history.append({
+				"stage": "execute",
+				"error": "PIL images not available for execution.",
+			})
+			return state
+
+		plan = state.plan or {"refine_hands": False, "restore_accessories": False}
+		final_output = self._resolve_final_output(state)
+
+		executor = ExecutionAgent()
+		result = executor.execute(
+			original_image_path=state.person_image_pil,
+			tryon_image_path=state.tryon_image_pil,
+			output_path=final_output,
+			refine_hands=plan.get("refine_hands", False),
+			restore_accessories=plan.get("restore_accessories", False),
+		)
+		state.execution_result = result
+		if result.success and result.final_output_path:
+			state.tryon_output_path = result.final_output_path
+			state.tryon_image_pil = self._to_pil(result.final_output_path)
+			if state.tryon_result is not None:
+				state.tryon_result.output_path = result.final_output_path
+		state.iterations += 1
+		state.history.append({"stage": "execute", "success": result.success})
+		return state
+
+	@staticmethod
+	def _to_pil(image_input: Any) -> Optional[Any]:
+		"""Load an image as PIL.Image when possible."""
+		try:
+			from PIL import Image
+		except Exception:
+			Image = None
+
+		try:
+			import numpy as np
+		except Exception:
+			np = None
+
+		if Image is None:
+			return None
+
+		if isinstance(image_input, Image.Image):
+			return image_input
+		if np is not None and isinstance(image_input, np.ndarray):
+			return Image.fromarray(image_input).convert("RGB")
+		try:
+			path = Path(image_input)
+			if path.exists():
+				return Image.open(path).convert("RGB")
+		except Exception:
+			return None
+		return None
+
+	@staticmethod
+	def _resolve_final_output(state: ManagerState) -> Optional[str]:
+		if state.output_path:
+			return state.output_path
+		if not state.tryon_result or not state.tryon_result.output_path:
+			return None
+		tryon_path = Path(state.tryon_result.output_path)
+		result_dir = Path(state.result_dir)
+		result_dir.mkdir(parents=True, exist_ok=True)
+		return str(result_dir / f"{tryon_path.stem}_fixed{tryon_path.suffix}")
+
+	# ------------------------------------------------------------------
+	# Flow control
+	# ------------------------------------------------------------------
+
+	def _should_continue(self, state: ManagerState) -> str:
+		if state.iterations >= state.max_iterations:
+			return "end"
+
+		report = state.detection_report
+		if report is None:
+			return "end"
+
+		if report.hands.distorted or report.accessories.missing:
+			return "continue"
+		return "end"
+

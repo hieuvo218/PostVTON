@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 import logging
 import shutil
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -114,15 +115,57 @@ class ExecutionAgent:
 			return f"{label} image not found: {image_path}"
 		return None
 
+	@staticmethod
+	def _coerce_image_input(
+		image: Union[str, Path, Any],
+		label: str,
+		tmp_dir: str,
+	) -> Tuple[Optional[str], Optional[str]]:
+		"""Normalize image input to a filesystem path."""
+		if isinstance(image, (str, Path)):
+			return str(image), None
+
+		try:
+			import numpy as np
+		except Exception:
+			np = None
+
+		try:
+			from PIL import Image
+		except Exception:
+			Image = None
+
+		if Image is not None and isinstance(image, Image.Image):
+			tmp_root = Path(tmp_dir)
+			tmp_root.mkdir(parents=True, exist_ok=True)
+			tmp_path = tmp_root / f"{label.lower()}_{uuid.uuid4().hex}.png"
+			image.convert("RGB").save(tmp_path)
+			return str(tmp_path), None
+
+		if np is not None and isinstance(image, np.ndarray):
+			if Image is None:
+				return None, "PIL is required to save numpy image inputs."
+			tmp_root = Path(tmp_dir)
+			tmp_root.mkdir(parents=True, exist_ok=True)
+			tmp_path = tmp_root / f"{label.lower()}_{uuid.uuid4().hex}.png"
+			Image.fromarray(image).convert("RGB").save(tmp_path)
+			return str(tmp_path), None
+
+		return None, f"Unsupported {label} image input type: {type(image).__name__}"
+
 	def run_hand_refinement(
 		self,
-		tryon_image_path: str,
+		tryon_image_path: Union[str, Path, Any],
 		output_path: Optional[str] = None,
 		work_dir: str = "outputs/execution_agent",
 		hand_params: Optional[Dict[str, Any]] = None,
 	) -> ExecutionStepResult:
 		"""Run only the hand refinement step and return step result."""
-		error = self._validate_image_path(tryon_image_path, "Try-on")
+		tryon_path_str, error = self._coerce_image_input(
+			tryon_image_path,
+			label="Try-on",
+			tmp_dir=work_dir,
+		)
 		if error:
 			return ExecutionStepResult(
 				name="hand_refinement",
@@ -130,7 +173,15 @@ class ExecutionAgent:
 				error=error,
 			)
 
-		tryon = Path(tryon_image_path)
+		error = self._validate_image_path(tryon_path_str, "Try-on")
+		if error:
+			return ExecutionStepResult(
+				name="hand_refinement",
+				success=False,
+				error=error,
+			)
+
+		tryon = Path(tryon_path_str)
 		work = Path(work_dir)
 		work.mkdir(parents=True, exist_ok=True)
 		hand_output = Path(output_path) if output_path else (work / f"{tryon.stem}_hand_refined{tryon.suffix}")
@@ -151,13 +202,17 @@ class ExecutionAgent:
 
 	def run_accessory_restoration(
 		self,
-		original_image_path: str,
-		target_image_path: str,
+		original_image_path: Union[str, Path, Any],
+		target_image_path: Union[str, Path, Any],
 		output_path: Optional[str] = None,
 		accessory_params: Optional[Dict[str, Any]] = None,
 	) -> ExecutionStepResult:
 		"""Run only the accessory restoration step and return step result."""
-		original_error = self._validate_image_path(original_image_path, "Original")
+		original_path_str, original_error = self._coerce_image_input(
+			original_image_path,
+			label="Original",
+			tmp_dir="outputs/execution_agent",
+		)
 		if original_error:
 			return ExecutionStepResult(
 				name="accessory_restoration",
@@ -165,7 +220,27 @@ class ExecutionAgent:
 				error=original_error,
 			)
 
-		target_error = self._validate_image_path(target_image_path, "Target")
+		target_path_str, target_error = self._coerce_image_input(
+			target_image_path,
+			label="Target",
+			tmp_dir="outputs/execution_agent",
+		)
+		if target_error:
+			return ExecutionStepResult(
+				name="accessory_restoration",
+				success=False,
+				error=target_error,
+			)
+
+		original_error = self._validate_image_path(original_path_str, "Original")
+		if original_error:
+			return ExecutionStepResult(
+				name="accessory_restoration",
+				success=False,
+				error=original_error,
+			)
+
+		target_error = self._validate_image_path(target_path_str, "Target")
 		if target_error:
 			return ExecutionStepResult(
 				name="accessory_restoration",
@@ -174,8 +249,8 @@ class ExecutionAgent:
 			)
 
 		accessory_result = self._get_accessory_restorer().restore(
-			source_image=original_image_path,
-			target_image=target_image_path,
+			source_image=original_path_str,
+			target_image=target_path_str,
 			output_path=output_path,
 			**dict(accessory_params or {}),
 		)
@@ -190,8 +265,8 @@ class ExecutionAgent:
 
 	def execute(
 		self,
-		original_image_path: str,
-		tryon_image_path: str,
+		original_image_path: Union[str, Path, Any],
+		tryon_image_path: Union[str, Path, Any],
 		output_path: Optional[str] = None,
 		refine_hands: bool = True,
 		restore_accessories: bool = True,
@@ -211,25 +286,53 @@ class ExecutionAgent:
 			hand_params: Extra kwargs for HandRefiner.refine().
 			accessory_params: Extra kwargs for AccessoryRestorer.restore().
 		"""
-		original = Path(original_image_path)
-		tryon = Path(tryon_image_path)
-
-		original_error = self._validate_image_path(original_image_path, "Original")
+		original_path_str, original_error = self._coerce_image_input(
+			original_image_path,
+			label="Original",
+			tmp_dir=work_dir,
+		)
 		if original_error:
 			return ExecutionResult(
 				success=False,
-				original_image_path=original_image_path,
-				tryon_image_path=tryon_image_path,
+				original_image_path=str(original_image_path),
+				tryon_image_path=str(tryon_image_path),
 				final_output_path=None,
 				error=original_error,
 			)
 
-		tryon_error = self._validate_image_path(tryon_image_path, "Try-on")
+		tryon_path_str, tryon_error = self._coerce_image_input(
+			tryon_image_path,
+			label="Try-on",
+			tmp_dir=work_dir,
+		)
 		if tryon_error:
 			return ExecutionResult(
 				success=False,
-				original_image_path=original_image_path,
-				tryon_image_path=tryon_image_path,
+				original_image_path=str(original_image_path),
+				tryon_image_path=str(tryon_image_path),
+				final_output_path=None,
+				error=tryon_error,
+			)
+
+		original = Path(original_path_str)
+		tryon = Path(tryon_path_str)
+
+		original_error = self._validate_image_path(original_path_str, "Original")
+		if original_error:
+			return ExecutionResult(
+				success=False,
+				original_image_path=str(original_path_str),
+				tryon_image_path=str(tryon_path_str),
+				final_output_path=None,
+				error=original_error,
+			)
+
+		tryon_error = self._validate_image_path(tryon_path_str, "Try-on")
+		if tryon_error:
+			return ExecutionResult(
+				success=False,
+				original_image_path=str(original_path_str),
+				tryon_image_path=str(tryon_path_str),
 				final_output_path=None,
 				error=tryon_error,
 			)
@@ -314,8 +417,8 @@ class ExecutionAgent:
 
 
 def run_execution_agent(
-	original_image_path: str,
-	tryon_image_path: str,
+	original_image_path: Union[str, Path, Any],
+	tryon_image_path: Union[str, Path, Any],
 	output_path: Optional[str] = None,
 	refine_hands: bool = True,
 	restore_accessories: bool = True,
