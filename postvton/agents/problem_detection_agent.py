@@ -14,7 +14,8 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple, Union
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +128,8 @@ class ProblemDetectionAgent:
 
     def detect(
         self,
-        image_path: str,
-        original_image_path: Optional[str] = None,
+        image_path: Union[str, Path, "Image.Image", "np.ndarray"],
+        original_image_path: Optional[Union[str, Path, "Image.Image", "np.ndarray"]] = None,
     ) -> ProblemDetectionReport:
         """Run all enabled detectors on a try-on image.
 
@@ -141,20 +142,29 @@ class ProblemDetectionAgent:
         Returns:
             ProblemDetectionReport describing any detected problems.
         """
-        path = Path(image_path)
+        image_path_str, image_error = self._coerce_image_input(image_path, label="Try-on")
+        if image_error:
+            return ProblemDetectionReport(
+                image_path=str(image_path),
+                accessories=accessories_report,
+                hands=hands_report,
+                error=image_error,
+            )
+
+        path = Path(image_path_str)
         accessories_report = AccessoriesReport(missing=False, details=[])
         hands_report = HandsReport(distorted=False, analysis="")
 
         if not path.exists():
             return ProblemDetectionReport(
-                image_path=image_path,
+                image_path=image_path_str,
                 accessories=accessories_report,
                 hands=hands_report,
-                error=f"Image not found: {image_path}",
+                error=f"Image not found: {image_path_str}",
             )
 
         # ---- Hand distortion (always on) ----
-        hand_result = self._run_hand_detection(image_path)
+        hand_result = self._run_hand_detection(image_path_str)
         if hand_result.error:
             logger.warning("Hand detector warning: %s", hand_result.error)
         hands_report = HandsReport(
@@ -165,8 +175,19 @@ class ProblemDetectionAgent:
         # ---- Accessory detection (always on) ----
         error: Optional[str] = None
         if original_image_path:
+            original_path_str, original_error = self._coerce_image_input(
+                original_image_path,
+                label="Original",
+            )
+            if original_error:
+                return ProblemDetectionReport(
+                    image_path=image_path_str,
+                    accessories=accessories_report,
+                    hands=hands_report,
+                    error=original_error,
+                )
             # Two-image comparison: detect what is missing relative to the original
-            missing_result = self._run_missing_accessory_detection(original_image_path, image_path)
+            missing_result = self._run_missing_accessory_detection(original_path_str, image_path_str)
             if missing_result.error:
                 logger.warning("Missing accessory detector warning: %s", missing_result.error)
                 accessories_report = AccessoriesReport(missing=False, details=[])
@@ -183,14 +204,14 @@ class ProblemDetectionAgent:
                 error = None
         else:
             return ProblemDetectionReport(
-                image_path=image_path,
+                image_path=image_path_str,
                 accessories=accessories_report,
                 hands=hands_report,
                 error="original_image_path is required for accessory detection.",
             )
 
         report = ProblemDetectionReport(
-            image_path=image_path,
+            image_path=image_path_str,
             accessories=accessories_report,
             hands=hands_report,
             error=error,
@@ -282,15 +303,53 @@ class ProblemDetectionAgent:
                 missing_by_label={},
             )
 
+    @staticmethod
+    def _coerce_image_input(
+        image: Union[str, Path, Any],
+        label: str,
+        tmp_dir: str = "outputs/problem_detection_agent/tmp",
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Normalize image input to a filesystem path."""
+        if isinstance(image, (str, Path)):
+            return str(image), None
+
+        try:
+            import numpy as np
+        except Exception:
+            np = None
+
+        try:
+            from PIL import Image
+        except Exception:
+            Image = None
+
+        if Image is not None and isinstance(image, Image.Image):
+            tmp_root = Path(tmp_dir)
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            tmp_path = tmp_root / f"{label.lower()}_{uuid.uuid4().hex}.png"
+            image.convert("RGB").save(tmp_path)
+            return str(tmp_path), None
+
+        if np is not None and isinstance(image, np.ndarray):
+            if Image is None:
+                return None, "PIL is required to save numpy image inputs."
+            tmp_root = Path(tmp_dir)
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            tmp_path = tmp_root / f"{label.lower()}_{uuid.uuid4().hex}.png"
+            Image.fromarray(image).convert("RGB").save(tmp_path)
+            return str(tmp_path), None
+
+        return None, f"Unsupported {label} image input type: {type(image).__name__}"
+
 
 # ---------------------------------------------------------------------------
 # Convenience function
 # ---------------------------------------------------------------------------
 
 def detect_problems(
-    image_path: str,
+    image_path: Union[str, Path, "Image.Image", "np.ndarray"],
     api_keys: List[str],
-    original_image_path: Optional[str] = None,
+    original_image_path: Optional[Union[str, Path, "Image.Image", "np.ndarray"]] = None,
     max_retries_per_key: int = 2,
     max_total_retries: int = 2,
 ) -> ProblemDetectionReport:
