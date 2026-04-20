@@ -23,7 +23,7 @@ class ManagerState:
 	cloth_type: str
 	api_keys: List[str]
 	output_path: Optional[str] = None
-	result_dir: str = "result"
+	output_dir: str = "output"
 	max_iterations: int = 2
 	iterations: int = 0
 
@@ -84,7 +84,7 @@ class ManagerAgent:
 		cloth_type: str,
 		api_keys: List[str],
 		output_path: Optional[str] = None,
-		result_dir: str = "result",
+		output_dir: str = "output",
 	) -> ManagerState:
 		"""Run the manager orchestration loop and return final state."""
 		state = ManagerState(
@@ -93,7 +93,7 @@ class ManagerAgent:
 			cloth_type=cloth_type,
 			api_keys=api_keys,
 			output_path=output_path,
-			result_dir=result_dir,
+			output_dir=output_dir,
 			max_iterations=self.max_iterations,
 		)
 		graph = self.build_graph()
@@ -142,8 +142,9 @@ class ManagerAgent:
 
 		detector = ProblemDetectionAgent(api_keys=state.api_keys)
 		report = detector.detect(
-			image_path=state.tryon_image_pil,
-			original_image_path=state.person_image_pil,
+			image=state.tryon_image_pil,
+			original_image=state.person_image_pil,
+			image_id=Path(state.tryon_output_path).name if state.tryon_output_path else "tryon",
 		)
 		state.detection_report = report
 		state.history.append({"stage": "detect", "report": report.to_dict()})
@@ -181,22 +182,23 @@ class ManagerAgent:
 			return state
 
 		plan = state.plan or {"refine_hands": False, "restore_accessories": False}
-		final_output = self._resolve_final_output(state)
-
 		executor = ExecutionAgent()
 		result = executor.execute(
-			original_image_path=state.person_image_pil,
-			tryon_image_path=state.tryon_image_pil,
-			output_path=final_output,
+			original_image=state.person_image_pil,
+			tryon_image=state.tryon_image_pil,
 			refine_hands=plan.get("refine_hands", False),
 			restore_accessories=plan.get("restore_accessories", False),
 		)
 		state.execution_result = result
-		if result.success and result.final_output_path:
-			state.tryon_output_path = result.final_output_path
-			state.tryon_image_pil = self._to_pil(result.final_output_path)
-			if state.tryon_result is not None:
-				state.tryon_result.output_path = result.final_output_path
+		if result.success and result.final_image is not None:
+			final_output = self._resolve_final_output(state)
+			if final_output:
+				Path(final_output).parent.mkdir(parents=True, exist_ok=True)
+				result.final_image.save(final_output)
+				state.tryon_output_path = final_output
+				if state.tryon_result is not None:
+					state.tryon_result.output_path = final_output
+			state.tryon_image_pil = result.final_image
 		state.iterations += 1
 		state.history.append({"stage": "execute", "success": result.success})
 		return state
@@ -233,12 +235,12 @@ class ManagerAgent:
 	def _resolve_final_output(state: ManagerState) -> Optional[str]:
 		if state.output_path:
 			return state.output_path
-		if not state.tryon_result or not state.tryon_result.output_path:
-			return None
-		tryon_path = Path(state.tryon_result.output_path)
-		result_dir = Path(state.result_dir)
+		result_dir = Path(state.output_dir)
 		result_dir.mkdir(parents=True, exist_ok=True)
-		return str(result_dir / f"{tryon_path.stem}_fixed{tryon_path.suffix}")
+		if state.tryon_result and state.tryon_result.output_path:
+			tryon_path = Path(state.tryon_result.output_path)
+			return str(result_dir / f"{tryon_path.stem}_fixed{tryon_path.suffix}")
+		return str(result_dir / "final.png")
 
 	# ------------------------------------------------------------------
 	# Flow control
