@@ -6,30 +6,26 @@ back onto the try-on result using precise segmentation masks.
 
 Pipeline::
 
-    source image ──► MissingAccessoryDetector.detect_accessories() ──► detected masks + bboxes ──┐
-    target image (try-on result) ──────────────────────────────────────► composite ──► restored image
+    source image (PIL) ──► MissingAccessoryDetector.detect_accessories() ──► masks + bboxes ──┐
+    target image (PIL) ──────────────────────────────────────────────────────► composite ──► restored image
 
 Usage::
 
     restorer = AccessoryRestorer()
-    result = restorer.restore(
-        source_image="person_original.jpg",
-        target_image="tryon_output.png",
-        output_path="restored_output.png",
-    )
+    result = restorer.restore(source_image=person_pil, target_image=tryon_pil)
     if result.success:
-        print(f"Restored {result.restored_count} accessory/ies → {result.output_path}")
+        print(f"Restored {result.restored_count} accessory/ies")
 
     # One-shot functional API
-    result = restore_accessories("original.jpg", "tryon.png", "out.png")
+    result = restore_accessories(person_pil, tryon_pil)
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from postvton.tools.detection.missing_accessory_detector import (
     MissingAccessoryDetector,
@@ -45,8 +41,9 @@ from postvton.tools.detection.missing_accessory_detector import (
 @dataclass
 class AccessoryRestorationResult:
     """Result of an accessory restoration operation."""
+
     success: bool
-    output_path: Optional[str]
+    output_image: Optional[Image.Image]
     restored_count: int
     labels_restored: List[str] = field(default_factory=list)
     detection_result: Optional[AccessoryDetectionResult] = None
@@ -57,13 +54,13 @@ class AccessoryRestorationResult:
             return f"AccessoryRestorationResult(failed: {self.error})"
         return (
             f"AccessoryRestorationResult(restored={self.restored_count}, "
-            f"labels={self.labels_restored}, output={self.output_path})"
+            f"labels={self.labels_restored})"
         )
 
     def to_dict(self) -> dict:
         return {
             "success": self.success,
-            "output_path": self.output_path,
+            "output_image": self.output_image is not None,
             "restored_count": self.restored_count,
             "labels_restored": self.labels_restored,
             "detection": self.detection_result.to_dict() if self.detection_result else None,
@@ -78,8 +75,8 @@ class AccessoryRestorationResult:
 class AccessoryRestorer:
     """Restore accessories from a source image onto a target (try-on) image.
 
-    Detection is performed on the *source* image (the original photo that has
-    accessories). The detected accessories are then composited onto the *target*
+    Detection is performed on the source image (the original photo that has
+    accessories). The detected accessories are then composited onto the target
     image (the try-on output that may be missing them).
 
     Args:
@@ -108,47 +105,43 @@ class AccessoryRestorer:
 
     def restore(
         self,
-        source_image: Union[str, Path, np.ndarray],
-        target_image: Union[str, Path, np.ndarray],
-        output_path: Optional[Union[str, Path]] = None,
+        source_image: Image.Image,
+        target_image: Image.Image,
     ) -> AccessoryRestorationResult:
         """Detect accessories in source and paste them onto target.
 
         Args:
-            source_image: Original image containing accessories (path or BGR array).
-            target_image: Try-on result image to restore accessories onto
-                          (path or BGR array).
-            output_path:  Where to save the restored image. If None, the image
-                          is only returned in the result (not saved).
+            source_image: Original image containing accessories (PIL).
+            target_image: Try-on result image to restore accessories onto (PIL).
 
         Returns:
             AccessoryRestorationResult.
         """
-        # ---- load images ----
-        src, src_path = self._load(source_image, "source")
-        if src is None:
+        if not isinstance(source_image, Image.Image):
             return AccessoryRestorationResult(
                 success=False,
-                output_path=None,
+                output_image=None,
                 restored_count=0,
-                error=f"Could not load source image: {src_path}",
+                error=f"Expected PIL.Image.Image for source_image, got {type(source_image).__name__}",
             )
 
-        dst, dst_path = self._load(target_image, "target")
-        if dst is None:
+        if not isinstance(target_image, Image.Image):
             return AccessoryRestorationResult(
                 success=False,
-                output_path=None,
+                output_image=None,
                 restored_count=0,
-                error=f"Could not load target image: {dst_path}",
+                error=f"Expected PIL.Image.Image for target_image, got {type(target_image).__name__}",
             )
+
+        src = self._pil_to_bgr(source_image)
+        dst = self._pil_to_bgr(target_image)
 
         # ---- detect accessories in source ----
-        detection = self.detector.detect_accessories(src)
+        detection = self.detector.detect_accessories(source_image)
         if detection.error:
             return AccessoryRestorationResult(
                 success=False,
-                output_path=None,
+                output_image=None,
                 restored_count=0,
                 detection_result=detection,
                 error=f"Detection failed: {detection.error}",
@@ -156,11 +149,9 @@ class AccessoryRestorer:
 
         if not detection.found:
             print("[AccessoryRestorer] No accessories detected in source image.")
-            # Still save dst unchanged if output_path given
-            saved_path = self._save(dst, output_path)
             return AccessoryRestorationResult(
                 success=True,
-                output_path=saved_path,
+                output_image=target_image.copy(),
                 restored_count=0,
                 detection_result=detection,
             )
@@ -187,12 +178,10 @@ class AccessoryRestorer:
             labels_restored.append(acc.label)
             print(f"[AccessoryRestorer] Pasted '{acc.label}' (conf={acc.confidence:.2f}) onto target.")
 
-        # ---- save ----
-        saved_path = self._save(result_img, output_path)
-
+        result_pil = self._bgr_to_pil(result_img)
         return AccessoryRestorationResult(
             success=True,
-            output_path=saved_path,
+            output_image=result_pil,
             restored_count=len(labels_restored),
             labels_restored=labels_restored,
             detection_result=detection,
@@ -203,22 +192,14 @@ class AccessoryRestorer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _load(image: Union[str, Path, np.ndarray], name: str) -> Tuple[Optional[np.ndarray], str]:
-        """Load BGR array; returns (array, path_string) or (None, path_string) on error."""
-        if isinstance(image, np.ndarray):
-            return image, f"<{name}_array>"
-        path = str(image)
-        img = cv2.imread(path)
-        return img, path
+    def _pil_to_bgr(image: Image.Image) -> np.ndarray:
+        array = np.array(image.convert("RGB"))
+        return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
     @staticmethod
-    def _save(image: np.ndarray, output_path: Optional[Union[str, Path]]) -> Optional[str]:
-        if output_path is None:
-            return None
-        out = str(output_path)
-        Path(out).parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(out, image)
-        return out
+    def _bgr_to_pil(image: np.ndarray) -> Image.Image:
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)
 
     @staticmethod
     def _rescale_accessories(
@@ -259,18 +240,15 @@ class AccessoryRestorer:
         if x2 <= x1 or y2 <= y1:
             return dst
 
-        # Extract masked accessory pixels from (already-resized) source
         obj = cv2.bitwise_and(src, src, mask=acc.mask)
 
         obj_crop = obj[y1:y2, x1:x2]
         mask_crop = acc.mask[y1:y2, x1:x2]
         roi = dst[y1:y2, x1:x2]
 
-        # Build 3-channel binary mask for alpha blending
         mask_3ch = cv2.merge([mask_crop, mask_crop, mask_crop])
         mask_bin = (mask_3ch > 0).astype(np.uint8)
 
-        # Ensure shapes match (float safety)
         if roi.shape != obj_crop.shape:
             obj_crop = cv2.resize(obj_crop, (roi.shape[1], roi.shape[0]), interpolation=cv2.INTER_LINEAR)
             mask_bin = cv2.resize(mask_bin, (roi.shape[1], roi.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -286,9 +264,8 @@ class AccessoryRestorer:
 # ---------------------------------------------------------------------------
 
 def restore_accessories(
-    source_image: Union[str, Path, np.ndarray],
-    target_image: Union[str, Path, np.ndarray],
-    output_path: Optional[Union[str, Path]] = None,
+    source_image: Image.Image,
+    target_image: Image.Image,
     model_path: str = "yoloe-11l-seg.pt",
     class_names: Optional[List[str]] = None,
     conf: float = 0.25,
@@ -298,9 +275,8 @@ def restore_accessories(
     Detects accessories in source_image and pastes them onto target_image.
 
     Args:
-        source_image: Original image with accessories (path or BGR array).
-        target_image: Try-on result image (path or BGR array).
-        output_path:  Save path for restored image (optional).
+        source_image: Original image with accessories (PIL).
+        target_image: Try-on result image (PIL).
         model_path:   YOLOE weights path.
         class_names:  Accessory classes to detect.
         conf:         Confidence threshold.
@@ -313,4 +289,4 @@ def restore_accessories(
         class_names=class_names,
         conf=conf,
     )
-    return restorer.restore(source_image, target_image, output_path)
+    return restorer.restore(source_image, target_image)

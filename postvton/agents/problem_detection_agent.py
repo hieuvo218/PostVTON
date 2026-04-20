@@ -5,17 +5,18 @@ detection tools. Runs both hand distortion and accessory detection.
 
 Usage::
 
-    agent = ProblemDetectionAgent(api_keys=["key1", "key2"])
-    report = agent.detect("outputs/tryon_result.jpg", original_image_path="person.jpg")
-    print(report.to_dict())
+	agent = ProblemDetectionAgent(api_keys=["key1"])
+	report = agent.detect(tryon_image, original_image=person_image)
+	print(report.to_dict())
 """
 
 import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
-import uuid
+from typing import List, Optional
+
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,13 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from postvton.tools.detection.hand_detector import (
-    HandDistortionDetector,
-    HandDetectionResult,
+	HandDistortionDetector,
+	HandDetectionResult,
 )
 from postvton.tools.detection.missing_accessory_detector import (
-    MissingAccessoryDetector,
-    MissingAccessoryResult,
-    AccessoryDetectionResult as MissingAccessoryDetectionResult,
+	MissingAccessoryDetector,
+	MissingAccessoryResult,
+	AccessoryDetectionResult as MissingAccessoryDetectionResult,
 )
 
 
@@ -40,57 +41,57 @@ from postvton.tools.detection.missing_accessory_detector import (
 
 @dataclass
 class AccessoriesReport:
-    """Accessory detection summary."""
-    missing: bool
-    details: List[dict] = field(default_factory=list)
+	"""Accessory detection summary."""
+	missing: bool
+	details: List[dict] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        return {
-            "missing": self.missing,
-            "details": list(self.details),
-        }
+	def to_dict(self) -> dict:
+		return {
+			"missing": self.missing,
+			"details": list(self.details),
+		}
 
 
 @dataclass
 class HandsReport:
-    """Hand detection summary."""
-    distorted: bool
-    analysis: str = ""
+	"""Hand detection summary."""
+	distorted: bool
+	analysis: str = ""
 
-    def to_dict(self) -> dict:
-        return {
-            "distorted": self.distorted,
-            "analysis": self.analysis,
-        }
+	def to_dict(self) -> dict:
+		return {
+			"distorted": self.distorted,
+			"analysis": self.analysis,
+		}
 
 
 @dataclass
 class ProblemDetectionReport:
-    """Full detection report for one try-on image."""
-    image_path: str
-    accessories: AccessoriesReport
-    hands: HandsReport
-    error: Optional[str] = None
+	"""Full detection report for one try-on image."""
+	image_id: str
+	accessories: AccessoriesReport
+	hands: HandsReport
+	error: Optional[str] = None
 
-    # ---- helpers ----
+	# ---- helpers ----
 
-    def summary(self) -> str:
-        if self.error:
-            return f"Detection failed for {self.image_path}: {self.error}"
-        parts = []
-        if self.hands.distorted:
-            parts.append("hand_distortion")
-        if self.accessories.missing:
-            parts.append("missing_accessories")
-        if not parts:
-            return f"No problems detected in {self.image_path}"
-        return f"Problems detected in {self.image_path}: {', '.join(parts)}"
+	def summary(self) -> str:
+		if self.error:
+			return f"Detection failed for {self.image_id}: {self.error}"
+		parts = []
+		if self.hands.distorted:
+			parts.append("hand_distortion")
+		if self.accessories.missing:
+			parts.append("missing_accessories")
+		if not parts:
+			return f"No problems detected in {self.image_id}"
+		return f"Problems detected in {self.image_id}: {', '.join(parts)}"
 
-    def to_dict(self) -> dict:
-        return {
-            "accessories": self.accessories.to_dict(),
-            "hands": self.hands.to_dict(),
-        }
+	def to_dict(self) -> dict:
+		return {
+			"accessories": self.accessories.to_dict(),
+			"hands": self.hands.to_dict(),
+		}
 
 
 # ---------------------------------------------------------------------------
@@ -98,248 +99,187 @@ class ProblemDetectionReport:
 # ---------------------------------------------------------------------------
 
 class ProblemDetectionAgent:
-    """Detect visual problems in virtual try-on images.
+	"""Detect visual problems in virtual try-on images.
 
-    Args:
-        api_keys:             Gemini API key(s) for VLM-based detectors.
-        max_retries_per_key:  Per-key attempt limit before rotating.
-        max_total_retries:    Total rotation loops before giving up.
-    """
+	Args:
+		api_keys:             Optional API key(s) for VLM-based detectors.
+		max_retries_per_key:  Per-key attempt limit before rotating.
+		max_total_retries:    Total rotation loops before giving up.
+	"""
 
-    def __init__(
-        self,
-        api_keys: List[str],
-        max_retries_per_key: int = 2,
-        max_total_retries: int = 2,
-    ):
-        if not api_keys:
-            raise ValueError("At least one Gemini API key is required.")
-        self.api_keys = list(api_keys)
-        self.max_retries_per_key = max_retries_per_key
-        self.max_total_retries = max_total_retries
+	def __init__(
+		self,
+		api_keys: Optional[List[str]] = None,
+		max_retries_per_key: int = 2,
+		max_total_retries: int = 2,
+	):
+		self.api_keys = list(api_keys or [])
+		self.max_retries_per_key = max_retries_per_key
+		self.max_total_retries = max_total_retries
 
-        # Lazy-initialised detectors
-        self._hand_detector: Optional[HandDistortionDetector] = None
-        self._missing_accessory_detector: Optional[MissingAccessoryDetector] = None
+		# Lazy-initialised detectors
+		self._hand_detector: Optional[HandDistortionDetector] = None
+		self._missing_accessory_detector: Optional[MissingAccessoryDetector] = None
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+	# ------------------------------------------------------------------
+	# Public interface
+	# ------------------------------------------------------------------
 
-    def detect(
-        self,
-        image_path: Union[str, Path, "Image.Image", "np.ndarray"],
-        original_image_path: Optional[Union[str, Path, "Image.Image", "np.ndarray"]] = None,
-    ) -> ProblemDetectionReport:
-        """Run all enabled detectors on a try-on image.
+	def detect(
+		self,
+		image: Image.Image,
+		original_image: Optional[Image.Image] = None,
+		image_id: str = "image",
+	) -> ProblemDetectionReport:
+		"""Run all enabled detectors on a try-on image.
 
-        Args:
-            image_path: Path to the generated try-on image.
-            original_image_path: Optional path to the original (pre-try-on) image.
-                When provided, uses two-image comparison to detect missing accessories.
-                When omitted, accessory detection is not performed.
+		Args:
+			image: PIL image for the generated try-on output.
+			original_image: Optional PIL image for the original (pre-try-on) image.
+				When provided, uses two-image comparison to detect missing accessories.
+				When omitted, accessory detection is not performed.
+			image_id: Optional identifier for logging/reporting.
 
-        Returns:
-            ProblemDetectionReport describing any detected problems.
-        """
-        image_path_str, image_error = self._coerce_image_input(image_path, label="Try-on")
-        if image_error:
-            return ProblemDetectionReport(
-                image_path=str(image_path),
-                accessories=accessories_report,
-                hands=hands_report,
-                error=image_error,
-            )
+		Returns:
+			ProblemDetectionReport describing any detected problems.
+		"""
+		accessories_report = AccessoriesReport(missing=False, details=[])
+		hands_report = HandsReport(distorted=False, analysis="")
 
-        path = Path(image_path_str)
-        accessories_report = AccessoriesReport(missing=False, details=[])
-        hands_report = HandsReport(distorted=False, analysis="")
+		if not isinstance(image, Image.Image):
+			return ProblemDetectionReport(
+				image_id=image_id,
+				accessories=accessories_report,
+				hands=hands_report,
+				error=f"Expected PIL.Image.Image, got {type(image).__name__}",
+			)
 
-        if not path.exists():
-            return ProblemDetectionReport(
-                image_path=image_path_str,
-                accessories=accessories_report,
-                hands=hands_report,
-                error=f"Image not found: {image_path_str}",
-            )
+		# ---- Hand distortion (always on) ----
+		hand_result = self._run_hand_detection(image)
+		if hand_result.error:
+			logger.warning("Hand detector warning: %s", hand_result.error)
+		hands_report = HandsReport(
+			distorted=hand_result.distorted,
+			analysis=hand_result.reason or hand_result.description or "",
+		)
 
-        # ---- Hand distortion (always on) ----
-        hand_result = self._run_hand_detection(image_path_str)
-        if hand_result.error:
-            logger.warning("Hand detector warning: %s", hand_result.error)
-        hands_report = HandsReport(
-            distorted=hand_result.distorted,
-            analysis=hand_result.reason or hand_result.description or "",
-        )
+		# ---- Accessory detection (always on) ----
+		error: Optional[str] = None
+		if original_image is not None:
+			# Two-image comparison: detect what is missing relative to the original
+			missing_result = self._run_missing_accessory_detection(original_image, image)
+			if missing_result.error:
+				logger.warning("Missing accessory detector warning: %s", missing_result.error)
+				accessories_report = AccessoriesReport(missing=False, details=[])
+				error = missing_result.error
+			else:
+				details = [
+					{"class": label, "count": int(count)}
+					for label, count in missing_result.missing_by_label.items()
+				]
+				accessories_report = AccessoriesReport(
+					missing=missing_result.has_missing,
+					details=details,
+				)
+				error = None
+		else:
+			return ProblemDetectionReport(
+				image_id=image_id,
+				accessories=accessories_report,
+				hands=hands_report,
+				error="original_image is required for accessory detection.",
+			)
 
-        # ---- Accessory detection (always on) ----
-        error: Optional[str] = None
-        if original_image_path:
-            original_path_str, original_error = self._coerce_image_input(
-                original_image_path,
-                label="Original",
-            )
-            if original_error:
-                return ProblemDetectionReport(
-                    image_path=image_path_str,
-                    accessories=accessories_report,
-                    hands=hands_report,
-                    error=original_error,
-                )
-            # Two-image comparison: detect what is missing relative to the original
-            missing_result = self._run_missing_accessory_detection(original_path_str, image_path_str)
-            if missing_result.error:
-                logger.warning("Missing accessory detector warning: %s", missing_result.error)
-                accessories_report = AccessoriesReport(missing=False, details=[])
-                error = missing_result.error
-            else:
-                details = [
-                    {"class": label, "count": int(count)}
-                    for label, count in missing_result.missing_by_label.items()
-                ]
-                accessories_report = AccessoriesReport(
-                    missing=missing_result.has_missing,
-                    details=details,
-                )
-                error = None
-        else:
-            return ProblemDetectionReport(
-                image_path=image_path_str,
-                accessories=accessories_report,
-                hands=hands_report,
-                error="original_image_path is required for accessory detection.",
-            )
+		report = ProblemDetectionReport(
+			image_id=image_id,
+			accessories=accessories_report,
+			hands=hands_report,
+			error=error,
+		)
+		logger.info(report.summary())
+		return report
 
-        report = ProblemDetectionReport(
-            image_path=image_path_str,
-            accessories=accessories_report,
-            hands=hands_report,
-            error=error,
-        )
-        logger.info(report.summary())
-        return report
+	# ------------------------------------------------------------------
+	# Convenience: detect from TryOnResult
+	# ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # Convenience: detect from TryOnResult
-    # ------------------------------------------------------------------
+	def detect_from_tryon_result(self, tryon_result) -> ProblemDetectionReport:
+		"""Run detection on the output of a TryOnAgent result.
 
-    def detect_from_tryon_result(self, tryon_result) -> ProblemDetectionReport:
-        """Run detection on the output of a TryOnAgent result.
+		Args:
+			tryon_result: TryOnResult dataclass (from tryon_agent.py).
 
-        Args:
-            tryon_result: TryOnResult dataclass (from tryon_agent.py).
+		Returns:
+			ProblemDetectionReport, or a failed report if no output path.
+		"""
+		output_image = getattr(tryon_result, "output_image", None)
+		if not tryon_result.success or output_image is None:
+			return ProblemDetectionReport(
+				image_id="",
+				accessories=AccessoriesReport(missing=False, details=[]),
+				hands=HandsReport(distorted=False, analysis=""),
+				error="TryOnResult has no valid output image.",
+			)
 
-        Returns:
-            ProblemDetectionReport, or a failed report if no output path.
-        """
-        if not tryon_result.success or not tryon_result.output_path:
-            return ProblemDetectionReport(
-                image_path="",
-                accessories=AccessoriesReport(missing=False, details=[]),
-                hands=HandsReport(distorted=False, analysis=""),
-                error="TryOnResult has no valid output image.",
-            )
+		original_image = getattr(tryon_result, "original_image", None)
+		if original_image is None:
+			original_image = getattr(tryon_result, "person_image", None)
 
-        original_image_path = getattr(tryon_result, "original_image_path", None)
-        if original_image_path is None:
-            original_image_path = getattr(tryon_result, "person_image_path", None)
+		return self.detect(
+			output_image,
+			original_image=original_image,
+		)
 
-        return self.detect(
-            tryon_result.output_path,
-            original_image_path=original_image_path,
-        )
+	# ------------------------------------------------------------------
+	# Private helpers
+	# ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+	def _get_hand_detector(self) -> HandDistortionDetector:
+		if self._hand_detector is None:
+			self._hand_detector = HandDistortionDetector(api_keys=self.api_keys)
+		return self._hand_detector
 
-    def _get_hand_detector(self) -> HandDistortionDetector:
-        if self._hand_detector is None:
-            self._hand_detector = HandDistortionDetector(
-                api_keys=self.api_keys,
-                max_retries_per_key=self.max_retries_per_key,
-                max_total_retries=self.max_total_retries,
-            )
-        return self._hand_detector
+	def _get_missing_accessory_detector(self) -> MissingAccessoryDetector:
+		if self._missing_accessory_detector is None:
+			self._missing_accessory_detector = MissingAccessoryDetector()
+		return self._missing_accessory_detector
 
-    def _get_missing_accessory_detector(self) -> MissingAccessoryDetector:
-        if self._missing_accessory_detector is None:
-            self._missing_accessory_detector = MissingAccessoryDetector()
-        return self._missing_accessory_detector
+	def _run_hand_detection(self, image: Image.Image) -> HandDetectionResult:
+		logger.debug("Running hand distortion check")
+		try:
+			return self._get_hand_detector().detect(image)
+		except Exception as exc:
+			from postvton.tools.detection.hand_detector import HandDetectionResult
+			return HandDetectionResult(
+				distorted=False,
+				error=f"Hand detector raised an exception: {exc}",
+			)
 
-    def _run_hand_detection(self, image_path: str) -> HandDetectionResult:
-        logger.debug("Running hand distortion check on %s", Path(image_path).name)
-        try:
-            return self._get_hand_detector().detect(image_path)
-        except Exception as exc:
-            from postvton.tools.detection.hand_detector import HandDetectionResult
-            return HandDetectionResult(
-                distorted=False,
-                error=f"Hand detector raised an exception: {exc}",
-            )
-
-    def _run_missing_accessory_detection(
-        self, original_image_path: str, tryon_image_path: str
-    ) -> MissingAccessoryResult:
-        logger.debug(
-            "Comparing accessories: %s vs %s",
-            Path(original_image_path).name,
-            Path(tryon_image_path).name,
-        )
-        try:
-            return self._get_missing_accessory_detector().detect_missing(
-                original_image_path, tryon_image_path
-            )
-        except Exception as exc:
-            error_msg = f"Missing accessory detector raised an exception: {exc}"
-            error_result = MissingAccessoryDetectionResult(
-                image_path=tryon_image_path,
-                image_size=(0, 0),
-                error=error_msg,
-            )
-            return MissingAccessoryResult(
-                original_detection=error_result,
-                tryon_detection=error_result,
-                missing_by_label={},
-            )
-
-    @staticmethod
-    def _coerce_image_input(
-        image: Union[str, Path, Any],
-        label: str,
-        tmp_dir: str = "outputs/problem_detection_agent/tmp",
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """Normalize image input to a filesystem path."""
-        if isinstance(image, (str, Path)):
-            return str(image), None
-
-        try:
-            import numpy as np
-        except Exception:
-            np = None
-
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-
-        if Image is not None and isinstance(image, Image.Image):
-            tmp_root = Path(tmp_dir)
-            tmp_root.mkdir(parents=True, exist_ok=True)
-            tmp_path = tmp_root / f"{label.lower()}_{uuid.uuid4().hex}.png"
-            image.convert("RGB").save(tmp_path)
-            return str(tmp_path), None
-
-        if np is not None and isinstance(image, np.ndarray):
-            if Image is None:
-                return None, "PIL is required to save numpy image inputs."
-            tmp_root = Path(tmp_dir)
-            tmp_root.mkdir(parents=True, exist_ok=True)
-            tmp_path = tmp_root / f"{label.lower()}_{uuid.uuid4().hex}.png"
-            Image.fromarray(image).convert("RGB").save(tmp_path)
-            return str(tmp_path), None
-
-        return None, f"Unsupported {label} image input type: {type(image).__name__}"
+	def _run_missing_accessory_detection(
+		self, original_image: Image.Image, tryon_image: Image.Image
+	) -> MissingAccessoryResult:
+		logger.debug("Comparing accessories between original and try-on images")
+		try:
+			return self._get_missing_accessory_detector().detect_missing(
+				original_image, tryon_image
+			)
+		except Exception as exc:
+			error_msg = f"Missing accessory detector raised an exception: {exc}"
+			orig_error = MissingAccessoryDetectionResult(
+				image_id="original",
+				image_size=(0, 0),
+				error=error_msg,
+			)
+			tryon_error = MissingAccessoryDetectionResult(
+				image_id="tryon",
+				image_size=(0, 0),
+				error=error_msg,
+			)
+			return MissingAccessoryResult(
+				original_detection=orig_error,
+				tryon_detection=tryon_error,
+				missing_by_label={},
+			)
 
 
 # ---------------------------------------------------------------------------
@@ -347,29 +287,32 @@ class ProblemDetectionAgent:
 # ---------------------------------------------------------------------------
 
 def detect_problems(
-    image_path: Union[str, Path, "Image.Image", "np.ndarray"],
-    api_keys: List[str],
-    original_image_path: Optional[Union[str, Path, "Image.Image", "np.ndarray"]] = None,
-    max_retries_per_key: int = 2,
-    max_total_retries: int = 2,
+	image: Image.Image,
+	api_keys: Optional[List[str]] = None,
+	original_image: Optional[Image.Image] = None,
+	image_id: str = "image",
+	max_retries_per_key: int = 2,
+	max_total_retries: int = 2,
 ) -> ProblemDetectionReport:
-    """One-shot problem detection for a try-on image.
+	"""One-shot problem detection for a try-on image.
 
-    Args:
-        image_path:           Path to the generated try-on image.
-        api_keys:             Gemini API key(s).
-        original_image_path:  Optional path to the original (pre-try-on) image.
-            When provided, two-image comparison detects missing accessories.
+	Args:
+		image:               PIL try-on image.
+		api_keys:            Optional API keys for the vision model.
+		original_image:      Optional original (pre-try-on) image.
+			When provided, two-image comparison detects missing accessories.
+		image_id:            Optional identifier for reporting.
 
-    Returns:
-        ProblemDetectionReport.
-    """
-    agent = ProblemDetectionAgent(
-        api_keys=api_keys,
-        max_retries_per_key=max_retries_per_key,
-        max_total_retries=max_total_retries,
-    )
-    return agent.detect(
-        image_path,
-        original_image_path=original_image_path,
-    )
+	Returns:
+		ProblemDetectionReport.
+	"""
+	agent = ProblemDetectionAgent(
+		api_keys=api_keys,
+		max_retries_per_key=max_retries_per_key,
+		max_total_retries=max_total_retries,
+	)
+	return agent.detect(
+		image,
+		original_image=original_image,
+		image_id=image_id,
+	)

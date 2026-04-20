@@ -5,16 +5,15 @@ Run from project root:
     python tests/test_execution_agent.py
 """
 
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from PIL import Image
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-
-TMP_DIR = PROJECT_ROOT / "outputs" / "test_execution_agent"
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"
@@ -23,13 +22,13 @@ FAIL = "[FAIL]"
 @dataclass
 class FakeHandResult:
     success: bool
-    output_path: Optional[str]
+    output_image: Optional[Image.Image]
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "success": self.success,
-            "output_path": self.output_path,
+            "output_image": self.output_image is not None,
             "error": self.error,
         }
 
@@ -37,14 +36,14 @@ class FakeHandResult:
 @dataclass
 class FakeAccessoryResult:
     success: bool
-    output_path: Optional[str]
+    output_image: Optional[Image.Image]
     error: Optional[str] = None
     restored_count: int = 1
 
     def to_dict(self) -> dict:
         return {
             "success": self.success,
-            "output_path": self.output_path,
+            "output_image": self.output_image is not None,
             "error": self.error,
             "restored_count": self.restored_count,
         }
@@ -54,44 +53,28 @@ class FakeHandRefiner:
     def __init__(self):
         self.calls = []
 
-    def refine(self, image, output_path, **kwargs):
-        self.calls.append({"image": image, "output_path": output_path, "kwargs": kwargs})
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(image, output_path)
-        return FakeHandResult(success=True, output_path=str(output_path))
+    def refine(self, image, **kwargs):
+        self.calls.append({"image": image, "kwargs": kwargs})
+        return FakeHandResult(success=True, output_image=image.copy())
 
 
 class FakeAccessoryRestorer:
     def __init__(self):
         self.calls = []
 
-    def restore(self, source_image, target_image, output_path=None, **kwargs):
+    def restore(self, source_image, target_image, **kwargs):
         self.calls.append(
             {
                 "source_image": source_image,
                 "target_image": target_image,
-                "output_path": output_path,
                 "kwargs": kwargs,
             }
         )
-        if output_path is None:
-            return FakeAccessoryResult(success=True, output_path=None)
-
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(target_image, output_path)
-        return FakeAccessoryResult(success=True, output_path=str(output_path))
+        return FakeAccessoryResult(success=True, output_image=target_image.copy())
 
 
-def _write_dummy_image(path: Path):
-    # A tiny valid PNG payload (1x1 transparent pixel)
-    png_bytes = (
-        b"\x89PNG\r\n\x1a\n"
-        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-        b"\x00\x00\x00\x0bIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\x0d\x0a\x2d\xb4"
-        b"\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(png_bytes)
+def _make_dummy_image() -> Image.Image:
+    return Image.new("RGB", (4, 4), color=(128, 128, 128))
 
 
 def test_import_and_init():
@@ -119,19 +102,17 @@ def test_missing_original_image():
     try:
         from postvton.agents.execution_agent import ExecutionAgent
 
-        tryon = TMP_DIR / "tryon.png"
-        _write_dummy_image(tryon)
-
+        tryon = _make_dummy_image()
         agent = ExecutionAgent(
             hand_refiner=FakeHandRefiner(),
             accessory_restorer=FakeAccessoryRestorer(),
         )
         result = agent.execute(
-            original_image_path=str(TMP_DIR / "missing.png"),
-            tryon_image_path=str(tryon),
+            original_image="not-an-image",
+            tryon_image=tryon,
         )
         assert result.success is False
-        assert result.error and "Original image not found" in result.error
+        assert result.error and "original_image" in result.error
         print(f"{PASS} Proper error for missing original image")
         return True
     except Exception as exc:
@@ -146,25 +127,20 @@ def test_full_flow_runs_both_steps():
     try:
         from postvton.agents.execution_agent import ExecutionAgent
 
-        original = TMP_DIR / "original.png"
-        tryon = TMP_DIR / "tryon_full.png"
-        output = TMP_DIR / "final_full.png"
-        _write_dummy_image(original)
-        _write_dummy_image(tryon)
+        original = _make_dummy_image()
+        tryon = _make_dummy_image()
 
         hand = FakeHandRefiner()
         accessory = FakeAccessoryRestorer()
 
         agent = ExecutionAgent(hand_refiner=hand, accessory_restorer=accessory)
         result = agent.execute(
-            original_image_path=str(original),
-            tryon_image_path=str(tryon),
-            output_path=str(output),
+            original_image=original,
+            tryon_image=tryon,
         )
 
         assert result.success is True
-        assert result.final_output_path == str(output)
-        assert Path(result.final_output_path).exists()
+        assert result.final_image is not None
         assert len(result.steps) == 2
         assert result.steps[0].name == "hand_refinement"
         assert result.steps[1].name == "accessory_restoration"
@@ -185,20 +161,16 @@ def test_accessory_only_flow():
     try:
         from postvton.agents.execution_agent import ExecutionAgent
 
-        original = TMP_DIR / "original_only.png"
-        tryon = TMP_DIR / "tryon_only.png"
-        output = TMP_DIR / "final_only.png"
-        _write_dummy_image(original)
-        _write_dummy_image(tryon)
+        original = _make_dummy_image()
+        tryon = _make_dummy_image()
 
         hand = FakeHandRefiner()
         accessory = FakeAccessoryRestorer()
 
         agent = ExecutionAgent(hand_refiner=hand, accessory_restorer=accessory)
         result = agent.execute(
-            original_image_path=str(original),
-            tryon_image_path=str(tryon),
-            output_path=str(output),
+            original_image=original,
+            tryon_image=tryon,
             refine_hands=False,
             restore_accessories=True,
         )
@@ -208,7 +180,7 @@ def test_accessory_only_flow():
         assert result.steps[0].name == "accessory_restoration"
         assert len(hand.calls) == 0
         assert len(accessory.calls) == 1
-        assert accessory.calls[0]["target_image"] == str(tryon)
+        assert accessory.calls[0]["target_image"] is tryon
 
         print(f"{PASS} Accessory-only flow correct")
         return True
@@ -224,23 +196,19 @@ def test_direct_hand_refinement_step():
     try:
         from postvton.agents.execution_agent import ExecutionAgent
 
-        tryon = TMP_DIR / "tryon_direct_hand.png"
-        output = TMP_DIR / "hand_direct_out.png"
-        _write_dummy_image(tryon)
+        tryon = _make_dummy_image()
 
         hand = FakeHandRefiner()
         accessory = FakeAccessoryRestorer()
         agent = ExecutionAgent(hand_refiner=hand, accessory_restorer=accessory)
 
         step = agent.run_hand_refinement(
-            tryon_image_path=str(tryon),
-            output_path=str(output),
+            tryon_image=tryon,
         )
 
         assert step.success is True
         assert step.name == "hand_refinement"
-        assert step.output_path == str(output)
-        assert Path(step.output_path).exists()
+        assert step.output_image is not None
         assert len(hand.calls) == 1
         assert len(accessory.calls) == 0
 
@@ -258,26 +226,21 @@ def test_direct_accessory_restoration_step():
     try:
         from postvton.agents.execution_agent import ExecutionAgent
 
-        original = TMP_DIR / "original_direct_accessory.png"
-        target = TMP_DIR / "target_direct_accessory.png"
-        output = TMP_DIR / "accessory_direct_out.png"
-        _write_dummy_image(original)
-        _write_dummy_image(target)
+        original = _make_dummy_image()
+        target = _make_dummy_image()
 
         hand = FakeHandRefiner()
         accessory = FakeAccessoryRestorer()
         agent = ExecutionAgent(hand_refiner=hand, accessory_restorer=accessory)
 
         step = agent.run_accessory_restoration(
-            original_image_path=str(original),
-            target_image_path=str(target),
-            output_path=str(output),
+            original_image=original,
+            target_image=target,
         )
 
         assert step.success is True
         assert step.name == "accessory_restoration"
-        assert step.output_path == str(output)
-        assert Path(step.output_path).exists()
+        assert step.output_image is not None
         assert len(hand.calls) == 0
         assert len(accessory.calls) == 1
 
@@ -291,8 +254,6 @@ def test_direct_accessory_restoration_step():
 
 
 def run_all():
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-
     tests = [
         test_import_and_init,
         test_missing_original_image,

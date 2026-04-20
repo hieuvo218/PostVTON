@@ -6,11 +6,11 @@ reports which accessories are missing in the try-on image.
 
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image
 
 
 @dataclass
@@ -34,7 +34,7 @@ class DetectedAccessory:
 @dataclass
 class AccessoryDetectionResult:
     """Accessory detection output for one image."""
-    image_path: str
+    image_id: str
     image_size: Tuple[int, int]
     accessories: List[DetectedAccessory] = field(default_factory=list)
     error: Optional[str] = None
@@ -49,7 +49,7 @@ class AccessoryDetectionResult:
 
     def to_dict(self) -> dict:
         return {
-            "image_path": self.image_path,
+            "image_id": self.image_id,
             "image_size": {"width": self.image_size[0], "height": self.image_size[1]},
             "found": self.found,
             "count": len(self.accessories),
@@ -114,21 +114,20 @@ class MissingAccessoryDetector:
         self.conf = conf
         self._model = None
 
-    def detect_accessories(self, image: Union[str, Path, np.ndarray]) -> AccessoryDetectionResult:
-        """Detect accessories in a single image."""
-        if isinstance(image, (str, Path)):
-            image_path = str(image)
-            img = cv2.imread(image_path)
-            if img is None:
-                return AccessoryDetectionResult(
-                    image_path=image_path,
-                    image_size=(0, 0),
-                    error=f"Could not read image: {image_path}",
-                )
-        else:
-            image_path = "<array>"
-            img = image
+    def detect_accessories(
+        self,
+        image: Image.Image,
+        image_id: str = "image",
+    ) -> AccessoryDetectionResult:
+        """Detect accessories in a single PIL image."""
+        if not isinstance(image, Image.Image):
+            return AccessoryDetectionResult(
+                image_id=image_id,
+                image_size=(0, 0),
+                error=f"Expected PIL.Image.Image, got {type(image).__name__}",
+            )
 
+        img = np.array(image.convert("RGB"))
         h, w = img.shape[:2]
 
         try:
@@ -136,22 +135,24 @@ class MissingAccessoryDetector:
             results = model.predict(img, conf=self.conf, verbose=False)[0]
         except Exception as exc:
             return AccessoryDetectionResult(
-                image_path=image_path,
+                image_id=image_id,
                 image_size=(w, h),
                 error=f"YOLOE prediction failed: {exc}",
             )
 
         accessories = self._parse_results(results, img_shape=(h, w))
         return AccessoryDetectionResult(
-            image_path=image_path,
+            image_id=image_id,
             image_size=(w, h),
             accessories=accessories,
         )
 
     def detect_missing(
         self,
-        original_image: Union[str, Path, np.ndarray],
-        tryon_image: Union[str, Path, np.ndarray],
+        original_image: Image.Image,
+        tryon_image: Image.Image,
+        original_id: str = "original",
+        tryon_id: str = "tryon",
     ) -> MissingAccessoryResult:
         """Compare original and try-on detections and report missing items.
 
@@ -160,8 +161,8 @@ class MissingAccessoryDetector:
             try-on:   [watch]
             missing_by_label -> {"watch": 1, "bracelet": 1}
         """
-        original_result = self.detect_accessories(original_image)
-        tryon_result = self.detect_accessories(tryon_image)
+        original_result = self.detect_accessories(original_image, image_id=original_id)
+        tryon_result = self.detect_accessories(tryon_image, image_id=tryon_id)
 
         if original_result.error or tryon_result.error:
             return MissingAccessoryResult(
@@ -229,8 +230,8 @@ class MissingAccessoryDetector:
 
 
 def detect_missing_accessories(
-    original_image: Union[str, Path, np.ndarray],
-    tryon_image: Union[str, Path, np.ndarray],
+    original_image: Image.Image,
+    tryon_image: Image.Image,
     model_path: str = "yoloe-11l-seg.pt",
     class_names: Optional[List[str]] = None,
     conf: float = 0.25,

@@ -1,23 +1,28 @@
-﻿"""Hand distortion detection tool using Gemini VLM.
+"""Hand distortion detection tool using GLM-4.6V via Hugging Face.
 
-Provides HandDistortionDetector class for use by ProblemDetectionAgent,
-and a standalone detect_hand_distortion() function for direct use.
+Provides HandDistortionDetector class for use by ProblemDetectionAgent.
 """
 
+import base64
+import io
 import json
 import logging
-import random
+import os
 import re
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
+
+from huggingface_hub import InferenceClient
 
 try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +52,10 @@ class HandDetectionResult:
         }
 
 
-# ---------------------------------------------------------------------------
-# Internal key-rotation helper
-# ---------------------------------------------------------------------------
-
 _VLM_PROMPT = (
     "Describe both hands and arms in detail. "
     "If any hand is partially hidden, blurred, or unclear, mention it explicitly. "
-    "In this task, 'distorted' means that the hand appears abnormal in shape or proportion â€” "
+    "In this task, 'distorted' means that the hand appears abnormal in shape or proportion -- "
     "for example, when fingers are missing, extra fingers, fused together, overly long or short, "
     "covered or blended with clothing, or have uneven texture, color, or boundary. "
     "DO NOT LIE, try to answer honestly."
@@ -80,75 +81,17 @@ CRITERIA FOR "distorted": true
 3. Hands are overlapping, clasped, or holding each other so one hand obscures the other.
 
 Respond ONLY in JSON format:
-{{"distorted": true/false, "reason": "short analysis citing a phrase from the description"}}
+{"distorted": true/false, "reason": "short analysis citing a phrase from the description"}
 """
 
 
-def _call_with_key_rotation(
-    api_keys: List[str],
-    build_payload,
-    max_retries_per_key: int,
-    max_total_retries: int,
-    label: str = "VLM",
-):
-    """Try ``build_payload()`` against each api_key in rotation.
-
-    Returns (genai response, key_used) or (None, None) on total failure.
-    """
-    if genai is None:
-        logger.warning("google.generativeai is not installed; hand detection is unavailable.")
-        return None, None
-
-    rate_limited: dict = {}   # key -> cooldown-until datetime
-    banned: set = set()
-
-    for loop in range(max_total_retries):
-        print(f"[{label}] Retry loop {loop + 1}/{max_total_retries}")
-        random.shuffle(api_keys)
-
-        for key in api_keys:
-            if key in banned:
-                continue
-            if key in rate_limited and datetime.now() < rate_limited[key]:
-                continue
-
-            print(f"[{label}] Trying key {key[:12]}...")
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel("gemini-2.5-flash")
-            payload = build_payload()
-
-            for attempt in range(max_retries_per_key):
-                try:
-                    resp = model.generate_content(
-                        contents=payload,
-                        generation_config={"temperature": 0.5},
-                    )
-                    print(f"[{label}] Success on key {key[:12]}")
-                    return resp, key
-                except Exception as exc:
-                    err = str(exc)
-                    print(f"[{label}] Error: {err}")
-                    if "429" in err or "rate" in err.lower():
-                        rate_limited[key] = datetime.now() + timedelta(seconds=40)
-                        break
-                    if "permission" in err.lower() or "auth" in err.lower():
-                        banned.add(key)
-                        break
-                    time.sleep(0.5)
-
-        time.sleep(1.0)
-
-    print(f"[{label}] All keys exhausted.")
-    return None, None
-
-
-def _force_parse_json(text: str) -> dict:
-    """Extract and parse the first JSON object from ``text``."""
-    json_match = re.search(r'```(?:json)?\s*({.*?})\s*```', text, re.DOTALL)
+def _safe_json_from_text(text: str) -> dict:
+    """Extract and parse the first JSON object from text."""
+    json_match = re.search(r"```(?:json)?\s*({.*?})\s*```", text, re.DOTALL)
     if json_match:
         text = json_match.group(1)
     else:
-        bracket_match = re.search(r'(\{.*\})', text, re.DOTALL)
+        bracket_match = re.search(r"(\{.*\})", text, re.DOTALL)
         if bracket_match:
             text = bracket_match.group(1)
     try:
@@ -158,156 +101,136 @@ def _force_parse_json(text: str) -> dict:
         return {"distorted": distorted, "reason": text}
 
 
-# ---------------------------------------------------------------------------
-# Main class
-# ---------------------------------------------------------------------------
-
 class HandDistortionDetector:
-    """Detect hand distortions in virtual try-on images using Gemini VLM.
-
-    Intended to be used as a tool by ProblemDetectionAgent.
-
-    Example::
-
-        detector = HandDistortionDetector(api_keys=[...])
-        result = detector.detect("path/to/tryon.jpg")
-        if result.distorted:
-            print("Hand distortion detected:", result.reason)
-    """
+    """Detect hand distortions in virtual try-on images using GLM-4.6V."""
 
     def __init__(
         self,
-        api_keys: List[str],
-        max_retries_per_key: int = 2,
-        max_total_retries: int = 2,
+        api_keys: Optional[List[str]] = None,
+        model_id: str = "zai-org/GLM-4.6V",
     ):
-        if not api_keys:
-            raise ValueError("At least one Gemini API key is required.")
-        self.api_keys = list(api_keys)
-        self.max_retries_per_key = max_retries_per_key
-        self.max_total_retries = max_total_retries
+        if load_dotenv is not None:
+            load_dotenv()
+        env_token = os.environ.get("HF_TOKEN")
+        self.token = env_token or (api_keys[0] if api_keys else None)
+        if not self.token:
+            raise ValueError("HF_TOKEN is required for GLM-4.6V inference.")
+        self.model_id = model_id
+        self._client: Optional[InferenceClient] = None
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+    def detect(self, image: "Image.Image") -> HandDetectionResult:
+        """Detect hand distortion in a try-on image."""
+        if Image is None:
+            return HandDetectionResult(distorted=False, error="PIL is required for hand detection.")
 
-    def detect(self, image_path: str) -> HandDetectionResult:
-        """Detect hand distortion in a try-on image.
-
-        Args:
-            image_path: Path to the try-on image (JPEG/PNG).
-
-        Returns:
-            HandDetectionResult with distorted flag, description, and reason.
-        """
-        path = Path(image_path)
-        if not path.exists():
-            return HandDetectionResult(
-                distorted=True,
-                error=f"Image not found: {image_path}",
-            )
-
-        if genai is None:
+        if not isinstance(image, Image.Image):
             return HandDetectionResult(
                 distorted=False,
-                error="google.generativeai is not installed.",
+                error=f"Expected PIL.Image.Image, got {type(image).__name__}",
             )
 
-        print(f"[HandDetector] Analysing: {path.name}")
-        image_bytes = path.read_bytes()
-        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        image_pil = image.convert("RGB")
 
-        # --- Stage 1: VLM description ---
-        description, vlm_key = self._describe(image_bytes, mime)
+        description = self._describe(image_pil)
         if description is None:
             return HandDetectionResult(
                 distorted=True,
-                error="VLM description failed: all API keys exhausted.",
+                error="VLM description failed.",
             )
 
-        print(f"[HandDetector] Description:\n{description}")
-
-        # --- Stage 2: Reasoning / classification ---
-        parsed, llm_key = self._analyse(description)
+        parsed = self._analyse(description)
         if parsed is None:
             return HandDetectionResult(
                 distorted=True,
                 description=description,
-                error="Analysis failed: all API keys exhausted.",
-                used_vlm_key=vlm_key,
+                error="Analysis failed.",
             )
 
         distorted = bool(parsed.get("distorted", False))
         reason = parsed.get("reason", "")
-        print(f"[HandDetector] distorted={distorted}  reason={reason}")
 
         return HandDetectionResult(
             distorted=distorted,
             description=description,
             reason=reason,
-            used_vlm_key=vlm_key,
-            used_llm_key=llm_key,
         )
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+    def _describe(self, image: "Image.Image") -> Optional[str]:
+        response = self._chat_with_image(_VLM_PROMPT, image)
+        if response is None:
+            return None
+        return response.strip()
 
-    def _describe(self, image_bytes: bytes, mime: str):
-        """Call VLM to get a textual description of the hands."""
-        def build():
-            return [
-                {"mime_type": mime, "data": image_bytes},
-                {"text": _VLM_PROMPT},
-            ]
-
-        resp, key = _call_with_key_rotation(
-            self.api_keys, build,
-            self.max_retries_per_key, self.max_total_retries,
-            label="HAND-DESC",
-        )
-        if resp is None:
-            return None, None
-        return (resp.text or "").strip(), key
-
-    def _analyse(self, description: str):
-        """Call LLM to classify whether the description indicates distortion."""
+    def _analyse(self, description: str) -> Optional[dict]:
         prompt = _ANALYSIS_PROMPT_TEMPLATE.format(description=description)
+        response = self._chat_with_text(prompt)
+        if response is None:
+            return None
+        return _safe_json_from_text(response)
 
-        def build():
-            return prompt
+    def _chat_with_image(self, prompt: str, image: "Image.Image") -> Optional[str]:
+        client = self._get_client()
+        data_url = self._image_to_data_url(image)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
+        try:
+            completion = client.chat.completions.create(
+                model=self.model_id,
+                messages=messages,
+            )
+        except Exception as exc:
+            logger.error("VLM call failed: %s", exc)
+            return None
 
-        resp, key = _call_with_key_rotation(
-            self.api_keys, build,
-            self.max_retries_per_key, self.max_total_retries,
-            label="HAND-ANALYSIS",
-        )
-        if resp is None:
-            return None, None
-        parsed = _force_parse_json((resp.text or "").strip())
-        return parsed, key
+        return self._extract_message_text(completion)
 
+    def _chat_with_text(self, prompt: str) -> Optional[str]:
+        client = self._get_client()
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        try:
+            completion = client.chat.completions.create(
+                model=self.model_id,
+                messages=messages,
+            )
+        except Exception as exc:
+            logger.error("LLM call failed: %s", exc)
+            return None
 
-# ---------------------------------------------------------------------------
-# Functional wrapper (backward-compatible)
-# ---------------------------------------------------------------------------
+        return self._extract_message_text(completion)
 
-def detect_hand_distortion(
-    tryon_path: str,
-    api_keys: List[str],
-    max_retries_per_key: int = 2,
-    max_total_retries: int = 2,
-) -> dict:
-    """Detect hand distortion in a try-on image.
+    def _get_client(self) -> InferenceClient:
+        if self._client is None:
+            self._client = InferenceClient(api_key=self.token)
+        return self._client
 
-    Thin wrapper around HandDistortionDetector for backward compatibility.
+    @staticmethod
+    def _extract_message_text(completion: Any) -> str:
+        try:
+            message = completion.choices[0].message
+            if isinstance(message.content, str):
+                return message.content
+            return str(message.content)
+        except Exception:
+            return str(completion)
 
-    Returns a dict with keys: distorted, description, analysis,
-    used_vlm_key, used_llm_key.
-    """
-    detector = HandDistortionDetector(
-        api_keys=api_keys,
-        max_retries_per_key=max_retries_per_key,
-        max_total_retries=max_total_retries,
-    )
-    return detector.detect(tryon_path).to_dict()
+    @staticmethod
+    def _image_to_data_url(image: "Image.Image") -> str:
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @staticmethod
+    def _coerce_image(image: "Image.Image") -> Tuple[Optional["Image.Image"], Optional[str]]:
+        if Image is None:
+            return None, "PIL is required for hand detection."
+        if isinstance(image, Image.Image):
+            return image.convert("RGB"), None
+        return None, f"Expected PIL.Image.Image, got {type(image).__name__}"

@@ -1,7 +1,5 @@
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Union
-import argparse
+from typing import Optional
 import logging
 
 import numpy as np
@@ -24,14 +22,14 @@ class HandRefinementResult:
     """Result of a hand refinement operation."""
 
     success: bool
-    output_path: Optional[str]
+    output_image: Optional[Image.Image]
     image_size: Optional[tuple[int, int]] = None
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "success": self.success,
-            "output_path": self.output_path,
+            "output_image": self.output_image is not None,
             "image_size": list(self.image_size) if self.image_size else None,
             "error": self.error,
         }
@@ -64,8 +62,7 @@ class HandRefiner:
 
     def refine(
         self,
-        image: Union[str, Path, Image.Image],
-        output_path: Union[str, Path],
+        image: Image.Image,
         prompt: str = DEFAULT_PROMPT,
         negative_prompt: str = "",
         num_inference_steps: int = 15,
@@ -73,11 +70,10 @@ class HandRefiner:
         seed: Optional[int] = 0,
         apply_histogram_matching: bool = True,
     ) -> HandRefinementResult:
-        """Run hand refinement and save the result.
+        """Run hand refinement and return a refined PIL image.
 
         Args:
-            image: Input image path or PIL image.
-            output_path: Where to save the refined output.
+            image: Input PIL image.
             prompt: Editing prompt passed to Qwen image editor.
             negative_prompt: Negative prompt for guidance.
             num_inference_steps: Diffusion inference steps.
@@ -86,13 +82,14 @@ class HandRefiner:
             apply_histogram_matching: Match output color histogram to input.
         """
         try:
-            input_img = self._load_image(image)
-            if input_img is None:
+            if not isinstance(image, Image.Image):
                 return HandRefinementResult(
                     success=False,
-                    output_path=None,
-                    error=f"Could not load image: {image}",
+                    output_image=None,
+                    error=f"Expected PIL.Image.Image, got {type(image).__name__}",
                 )
+
+            input_img = image.convert("RGB")
 
             width, height = input_img.size
             pipeline = self._get_pipeline()
@@ -118,20 +115,16 @@ class HandRefiner:
             if apply_histogram_matching:
                 refined = self._match_histograms(refined, input_img)
 
-            out = Path(output_path)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            refined.save(out)
-
             return HandRefinementResult(
                 success=True,
-                output_path=str(out),
+                output_image=refined,
                 image_size=(width, height),
             )
         except Exception as exc:
             logger.exception("Hand refinement failed")
             return HandRefinementResult(
                 success=False,
-                output_path=None,
+                output_image=None,
                 error=str(exc),
             )
 
@@ -148,15 +141,6 @@ class HandRefiner:
         return self._pipeline
 
     @staticmethod
-    def _load_image(image: Union[str, Path, Image.Image]) -> Optional[Image.Image]:
-        if isinstance(image, Image.Image):
-            return image.convert("RGB")
-        path = Path(image)
-        if not path.exists():
-            return None
-        return Image.open(path).convert("RGB")
-
-    @staticmethod
     def _match_histograms(output_image: Image.Image, reference_image: Image.Image) -> Image.Image:
         out_np = np.array(output_image)
         ref_np = np.array(reference_image)
@@ -166,8 +150,7 @@ class HandRefiner:
 
 
 def refine_hands(
-    image: Union[str, Path, Image.Image],
-    output_path: Union[str, Path],
+    image: Image.Image,
     model_path: str = "ovedrive/qwen-image-edit-4bit",
     device: Optional[str] = None,
     prompt: str = DEFAULT_PROMPT,
@@ -181,7 +164,6 @@ def refine_hands(
     refiner = HandRefiner(model_path=model_path, device=device)
     return refiner.refine(
         image=image,
-        output_path=output_path,
         prompt=prompt,
         negative_prompt=negative_prompt,
         num_inference_steps=num_inference_steps,
@@ -189,41 +171,3 @@ def refine_hands(
         seed=seed,
         apply_histogram_matching=apply_histogram_matching,
     )
-
-
-def _build_cli_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Refine malformed hands in an image")
-    parser.add_argument("--input", required=True, help="Path to input image")
-    parser.add_argument("--output", required=True, help="Path to output image")
-    parser.add_argument("--model-path", default="ovedrive/qwen-image-edit-4bit")
-    parser.add_argument("--device", default=None, choices=["cpu", "cuda", None])
-    parser.add_argument("--steps", type=int, default=15)
-    parser.add_argument("--cfg", type=float, default=3.0)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--negative-prompt", default="")
-    parser.add_argument("--no-hist-match", action="store_true")
-    return parser
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-    cli = _build_cli_parser().parse_args()
-
-    result = refine_hands(
-        image=cli.input,
-        output_path=cli.output,
-        model_path=cli.model_path,
-        device=cli.device,
-        prompt=cli.prompt,
-        negative_prompt=cli.negative_prompt,
-        num_inference_steps=cli.steps,
-        true_cfg_scale=cli.cfg,
-        seed=cli.seed,
-        apply_histogram_matching=not cli.no_hist_match,
-    )
-
-    if result.success:
-        print(f"Saved refined image to: {result.output_path}")
-    else:
-        print(f"Refinement failed: {result.error}")

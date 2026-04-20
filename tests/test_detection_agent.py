@@ -4,9 +4,9 @@ Controls:
     1.  Imports and class instantiation — lazy detectors start as None.
     2.  Report helpers with accessories/hands schema.
     3.  detect() gracefully handles a missing image file.
-    4.  detect() without original_image_path returns an error report.
+    4.  detect() without original_image returns an error report.
     5.  detect() two-image mode populates accessories missing/details.
-    6.  detect_problems() signature includes original_image_path.
+    6.  detect_problems() signature includes original_image.
     7.  MissingAccessoryDetector import and public interface.
     8.  MissingAccessoryResult shape via to_dict().
     9.  detect_from_tryon_result() with a failed TryOnResult.
@@ -14,14 +14,14 @@ Controls:
     11. HandDetectionResult.to_dict() shape.
     12. HandDistortionDetector instantiation and public interface.
     13. detect() bad API key does NOT crash the agent.
-    14. Live detect() two-image mode with real Gemini key
-        (skipped automatically when GEMINI_API_KEY env var is not set).
+    14. Live detect() two-image mode with real HF_TOKEN
+        (skipped automatically when HF_TOKEN env var is not set).
 
 Run from the project root:
     python tests/test_detection_agent.py
 
 For live test (test 14), set the environment variable first:
-    $env:GEMINI_API_KEY = "your-key-here"
+    $env:HF_TOKEN = "your-token-here"
     python tests/test_detection_agent.py
 """
 
@@ -31,6 +31,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -56,6 +58,10 @@ def _sample_exists() -> bool:
 
 def _tryon_exists() -> bool:
     return Path(TRYON_IMAGE).exists()
+
+
+def _load_image(path: str) -> Image.Image:
+    return Image.open(path).convert("RGB")
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +116,7 @@ def test_dataclass_helpers():
         hands = HandsReport(distorted=False, analysis="")
 
         clean = ProblemDetectionReport(
-            image_path="img.png",
+            image_id="img.png",
             accessories=accessories,
             hands=hands,
         )
@@ -122,7 +128,7 @@ def test_dataclass_helpers():
         assert "No problems" in clean.summary()
 
         dirty = ProblemDetectionReport(
-            image_path="img.png",
+            image_id="img.png",
             accessories=AccessoriesReport(missing=True, details=[{"class": "watch", "count": 1}]),
             hands=HandsReport(distorted=True, analysis="Fingers fused."),
         )
@@ -132,7 +138,7 @@ def test_dataclass_helpers():
         assert "Problems detected" in dirty.summary()
 
         err = ProblemDetectionReport(
-            image_path="img.png",
+            image_id="img.png",
             accessories=accessories,
             hands=hands,
             error="oops",
@@ -152,7 +158,7 @@ def test_dataclass_helpers():
 # ---------------------------------------------------------------------------
 
 def test_missing_file():
-    print("\n[TEST 3] detect() on a non-existent image path")
+    print("\n[TEST 3] detect() on a non-image input")
     try:
         from postvton.agents.problem_detection_agent import ProblemDetectionAgent
 
@@ -160,7 +166,7 @@ def test_missing_file():
         report = agent.detect("/nonexistent/image.png")
 
         assert report.error is not None
-        assert "not found" in report.error.lower() or "nonexistent" in report.error.lower()
+        assert "pil" in report.error.lower()
         assert report.accessories.missing is False
         assert report.hands.distorted is False
         print(f"{PASS} Missing file → error report: '{report.error}'")
@@ -172,11 +178,11 @@ def test_missing_file():
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — missing original_image_path
+# Test 4 — missing original_image
 # ---------------------------------------------------------------------------
 
 def test_missing_original_image_path():
-    print("\n[TEST 4] detect() without original_image_path returns error report")
+    print("\n[TEST 4] detect() without original_image returns error report")
     if not _sample_exists():
         print(f"{SKIP} Sample image not found — skipping")
         return True
@@ -188,14 +194,14 @@ def test_missing_original_image_path():
             max_retries_per_key=1,
             max_total_retries=1,
         )
-        report = agent.detect(SAMPLE_IMAGE)
+        report = agent.detect(_load_image(SAMPLE_IMAGE))
 
         assert report.error is not None
-        assert "original_image_path is required" in report.error
+        assert "original_image is required" in report.error
         assert report.accessories.details == []
         assert report.accessories.missing is False
 
-        print(f"{PASS} Missing original_image_path returns report error: {report.error}")
+        print(f"{PASS} Missing original_image returns report error: {report.error}")
         return True
     except Exception as exc:
         print(f"{FAIL} {exc}")
@@ -204,7 +210,7 @@ def test_missing_original_image_path():
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — two-image mode (with original_image_path)
+# Test 5 — two-image mode (with original_image)
 # ---------------------------------------------------------------------------
 
 def test_two_image_mode():
@@ -221,15 +227,13 @@ def test_two_image_mode():
             max_total_retries=1,
         )
         # Use same image for both → missing should be empty
-        report = agent.detect(SAMPLE_IMAGE, original_image_path=SAMPLE_IMAGE)
+        sample = _load_image(SAMPLE_IMAGE)
+        report = agent.detect(sample, original_image=sample)
 
         assert report.accessories.missing is False
         assert report.accessories.details == []
 
-        print(
-            f"{PASS} Two-image mode: has_missing={ad['has_missing']}, "
-            f"total_missing={ad['total_missing']}"
-        )
+        print(f"{PASS} Two-image mode: has_missing={report.accessories.missing}")
         return True
     except Exception as exc:
         print(f"{FAIL} {exc}")
@@ -242,13 +246,13 @@ def test_two_image_mode():
 # ---------------------------------------------------------------------------
 
 def test_detect_problems_signature():
-    print("\n[TEST 6] detect_problems() signature includes original_image_path")
+    print("\n[TEST 6] detect_problems() signature includes original_image")
     try:
         from postvton.agents.problem_detection_agent import detect_problems
 
         sig = inspect.signature(detect_problems)
         params = list(sig.parameters)
-        for expected in ("image_path", "api_keys", "original_image_path"):
+        for expected in ("image", "api_keys", "original_image"):
             assert expected in params, f"Missing param '{expected}' in detect_problems()"
 
         print(f"{PASS} detect_problems() signature: {params}")
@@ -305,8 +309,8 @@ def test_missing_accessory_result_shape():
             AccessoryDetectionResult,
         )
 
-        orig = AccessoryDetectionResult(image_path="orig.jpg", image_size=(640, 480))
-        tryon = AccessoryDetectionResult(image_path="tryon.jpg", image_size=(640, 480))
+        orig = AccessoryDetectionResult(image_id="orig", image_size=(640, 480))
+        tryon = AccessoryDetectionResult(image_id="tryon", image_size=(640, 480))
 
         # No missing
         r_clean = MissingAccessoryResult(
@@ -355,7 +359,7 @@ def test_detect_from_failed_tryon_result():
         @dataclass
         class FakeTryOnResult:
             success: bool
-            output_path: Optional[str] = None
+            output_image: Optional[Image.Image] = None
 
         agent = ProblemDetectionAgent(api_keys=["dummy-key"])
         report = agent.detect_from_tryon_result(FakeTryOnResult(success=False))
@@ -385,8 +389,8 @@ def test_detect_from_successful_tryon_result():
         @dataclass
         class FakeTryOnResult:
             success: bool
-            output_path: Optional[str]
-            original_image_path: Optional[str] = None
+            output_image: Optional[Image.Image]
+            original_image: Optional[Image.Image] = None
 
         agent = ProblemDetectionAgent(
             api_keys=["INVALID"],
@@ -396,11 +400,11 @@ def test_detect_from_successful_tryon_result():
         report = agent.detect_from_tryon_result(
             FakeTryOnResult(
                 success=True,
-                output_path=SAMPLE_IMAGE,
-                original_image_path=SAMPLE_IMAGE,
+                output_image=_load_image(SAMPLE_IMAGE),
+                original_image=_load_image(SAMPLE_IMAGE),
             )
         )
-        assert report.image_path == SAMPLE_IMAGE
+        assert report.image_id
         assert report.accessories is not None
         assert isinstance(report.accessories.missing, bool)
         print(f"{PASS} detect_from_tryon_result OK — accessories.missing={report.accessories.missing}")
@@ -456,14 +460,10 @@ def test_hand_detector_interface():
     try:
         from postvton.tools.detection.hand_detector import HandDistortionDetector
 
-        det = HandDistortionDetector(
-            api_keys=["dummy-key"],
-            max_retries_per_key=1,
-            max_total_retries=1,
-        )
+        det = HandDistortionDetector(api_keys=["dummy-key"])
         assert callable(getattr(det, "detect", None)), "Missing .detect() method"
         sig = inspect.signature(det.detect)
-        assert "image_path" in sig.parameters
+        assert "image" in sig.parameters
 
         print(f"{PASS} HandDistortionDetector has correct interface")
         return True
@@ -490,7 +490,8 @@ def test_bad_api_key():
             max_retries_per_key=1,
             max_total_retries=1,
         )
-        report = agent.detect(SAMPLE_IMAGE, original_image_path=SAMPLE_IMAGE)
+        sample = _load_image(SAMPLE_IMAGE)
+        report = agent.detect(sample, original_image=sample)
 
         assert isinstance(report.accessories.missing, bool)
         print(f"{PASS} No crash. accessories.missing={report.accessories.missing}, error={report.error}")
@@ -506,10 +507,10 @@ def test_bad_api_key():
 # ---------------------------------------------------------------------------
 
 def test_live_detection():
-    print("\n[TEST 14] Live two-image detect() with real Gemini API key")
-    api_key = "AIzaSyD-G7XB8jgjlKB25si13AC_ZHhRee1Whms"
+    print("\n[TEST 14] Live two-image detect() with real HF_TOKEN")
+    api_key = os.environ.get("HF_TOKEN")
     if not api_key:
-        print(f"{SKIP} GEMINI_API_KEY not set — skipping live test")
+        print(f"{SKIP} HF_TOKEN not set — skipping live test")
         return True
     if not _sample_exists():
         print(f"{SKIP} Sample image not found — skipping live test")
@@ -522,7 +523,11 @@ def test_live_detection():
         from postvton.agents.problem_detection_agent import ProblemDetectionAgent
 
         agent = ProblemDetectionAgent(api_keys=[api_key])
-        report = agent.detect(TRYON_IMAGE, original_image_path=SAMPLE_IMAGE)
+        report = agent.detect(
+            image=_load_image(TRYON_IMAGE),
+            original_image=_load_image(SAMPLE_IMAGE),
+            image_id=Path(TRYON_IMAGE).name,
+        )
 
         print(f"  error             : {report.error}")
         print(f"  hands.distorted   : {report.hands.distorted}")
@@ -530,7 +535,7 @@ def test_live_detection():
         print(f"  accessories.missing: {report.accessories.missing}")
         print(f"  accessories.details: {report.accessories.details}")
 
-        assert report.image_path == TRYON_IMAGE
+        assert report.image_id == Path(TRYON_IMAGE).name
         assert isinstance(report.hands.distorted, bool)
         assert isinstance(report.accessories.missing, bool)
 
