@@ -81,9 +81,9 @@ def _cosine_score(pose_a: List[tuple], pose_b: List[tuple]) -> float:
     min_len = min(len(vec_a), len(vec_b))
     if min_len == 0:
         return 0.0
-    score = float(cosine_similarity([vec_a[:min_len]], [vec_b[:min_len]])[0][0])
+    score = cosine_similarity([vec_a[:min_len]], [vec_b[:min_len]])[0][0]
     # Clamp to [0.0, 1.0] to handle floating-point precision errors
-    return max(0.0, min(1.0, score))
+    return score
 
 
 def score_pose_similarity(person_image_path: str, tryon_image_path: str) -> float:
