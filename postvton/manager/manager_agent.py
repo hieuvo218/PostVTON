@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 import logging
 from pathlib import Path
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,6 @@ class ManagerState:
 	person_image: Any
 	cloth_image: Any
 	cloth_type: str
-	api_keys: List[str]
 	output_path: Optional[str] = None
 	output_dir: str = "output"
 	max_iterations: int = 2
@@ -82,7 +82,6 @@ class ManagerAgent:
 		person_image: Any,
 		cloth_image: Any,
 		cloth_type: str,
-		api_keys: List[str],
 		output_path: Optional[str] = None,
 		output_dir: str = "output",
 	) -> ManagerState:
@@ -91,7 +90,6 @@ class ManagerAgent:
 			person_image=person_image,
 			cloth_image=cloth_image,
 			cloth_type=cloth_type,
-			api_keys=api_keys,
 			output_path=output_path,
 			output_dir=output_dir,
 			max_iterations=self.max_iterations,
@@ -105,11 +103,20 @@ class ManagerAgent:
 
 	def _node_tryon(self, state: ManagerState) -> ManagerState:
 		from postvton.agents.tryon_agent import TryOnAgent
+		person_path = self._resolve_image_path(state.person_image, "person", state.output_dir)
+		cloth_path = self._resolve_image_path(state.cloth_image, "cloth", state.output_dir)
+		if person_path is None or cloth_path is None:
+			state.history.append({
+				"stage": "tryon",
+				"success": False,
+				"error": "Could not resolve person/cloth inputs to valid image paths.",
+			})
+			return state
 
 		agent = TryOnAgent(device=self.device)
 		result = agent.generate(
-			person_image_path=state.person_image,
-			cloth_image_path=state.cloth_image,
+			person_image_path=person_path,
+			cloth_image_path=cloth_path,
 			cloth_type=state.cloth_type,
 			output_path=None,
 		)
@@ -241,6 +248,47 @@ class ManagerAgent:
 			tryon_path = Path(state.tryon_result.output_path)
 			return str(result_dir / f"{tryon_path.stem}_fixed{tryon_path.suffix}")
 		return str(result_dir / "final.png")
+
+	@staticmethod
+	def _resolve_image_path(image_input: Any, label: str, output_dir: str) -> Optional[str]:
+		"""Resolve an input image into a filesystem path for try-on models.
+
+		Try-on modules currently expect file paths. If a PIL image or numpy array
+		is provided, this helper persists it under output_dir/tmp_inputs/.
+		"""
+		try:
+			from PIL import Image
+		except Exception:
+			Image = None
+
+		try:
+			import numpy as np
+		except Exception:
+			np = None
+
+		if isinstance(image_input, (str, Path)):
+			path = Path(image_input)
+			if path.exists():
+				return str(path)
+			return None
+
+		if Image is not None and isinstance(image_input, Image.Image):
+			tmp_dir = Path(output_dir) / "tmp_inputs"
+			tmp_dir.mkdir(parents=True, exist_ok=True)
+			tmp_path = tmp_dir / f"{label}_{uuid.uuid4().hex[:8]}.png"
+			image_input.convert("RGB").save(tmp_path)
+			return str(tmp_path)
+
+		if np is not None and isinstance(image_input, np.ndarray):
+			tmp_dir = Path(output_dir) / "tmp_inputs"
+			tmp_dir.mkdir(parents=True, exist_ok=True)
+			tmp_path = tmp_dir / f"{label}_{uuid.uuid4().hex[:8]}.png"
+			if Image is None:
+				return None
+			Image.fromarray(image_input).convert("RGB").save(tmp_path)
+			return str(tmp_path)
+
+		return None
 
 	# ------------------------------------------------------------------
 	# Flow control
