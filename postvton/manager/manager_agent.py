@@ -6,7 +6,7 @@ execution in a closed-loop refinement process.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict, fields
 from typing import Any, Dict, List, Optional
 import logging
 from pathlib import Path
@@ -95,7 +95,20 @@ class ManagerAgent:
 			max_iterations=self.max_iterations,
 		)
 		graph = self.build_graph()
-		return graph.invoke(state)
+		result = graph.invoke(state)
+
+		if isinstance(result, ManagerState):
+			return result
+
+		if isinstance(result, dict):
+			merged = asdict(state)
+			allowed = {f.name for f in fields(ManagerState)}
+			for key in allowed:
+				if key in result:
+					merged[key] = result[key]
+			return ManagerState(**merged)
+
+		raise TypeError(f"Unexpected graph result type: {type(result).__name__}")
 
 	# ------------------------------------------------------------------
 	# Graph nodes
