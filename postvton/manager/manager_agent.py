@@ -147,7 +147,7 @@ class ManagerAgent:
 			})
 			return state
 
-		detector = ProblemDetectionAgent(api_keys=state.api_keys)
+		detector = ProblemDetectionAgent(api_keys=None)
 		report = detector.detect(
 			image=state.tryon_image_pil,
 			original_image=state.person_image_pil,
