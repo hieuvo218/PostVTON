@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
@@ -169,7 +171,6 @@ class HandDistortionDetector:
         return _safe_json_from_text(response)
 
     def _chat_with_image(self, prompt: str, image: "Image.Image") -> Optional[str]:
-        client = self._get_client()
         data_url = self._image_to_data_url(image)
         messages = [
             {
@@ -180,30 +181,81 @@ class HandDistortionDetector:
                 ],
             }
         ]
-        try:
-            completion = client.chat.completions.create(
-                model=self.model_id,
-                messages=messages,
-            )
-        except Exception as exc:
-            logger.error("VLM call failed: %s", exc)
-            return None
-
-        return self._extract_message_text(completion)
+        return self._chat_completion(messages, error_label="VLM")
 
     def _chat_with_text(self, prompt: str) -> Optional[str]:
-        client = self._get_client()
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        return self._chat_completion(messages, error_label="LLM")
+
+    def _chat_completion(self, messages: list, error_label: str) -> Optional[str]:
+        """Call chat completions on Hugging Face.
+
+        HF has changed behavior over time; the per-model endpoint
+        `/models/<id>/v1/chat/completions` may 404 on the hosted API.
+        We therefore try the OpenAI-compatible router endpoint first.
+        """
+
+        # 1) Preferred: HF router OpenAI-compatible endpoint
+        router_url = os.environ.get(
+            "HF_CHAT_COMPLETIONS_URL",
+            "https://api-inference.huggingface.co/v1/chat/completions",
+        )
         try:
+            text = self._chat_completion_via_router(router_url, messages)
+            if text is not None:
+                return text
+        except Exception as exc:
+            # Router failures fall back to InferenceClient below.
+            logger.warning("%s router call failed: %s", error_label, exc)
+
+        # 2) Fallback: huggingface_hub InferenceClient (may work on some setups)
+        try:
+            client = self._get_client()
             completion = client.chat.completions.create(
                 model=self.model_id,
                 messages=messages,
             )
+            return self._extract_message_text(completion)
         except Exception as exc:
-            logger.error("LLM call failed: %s", exc)
+            logger.error("%s call failed: %s", error_label, exc)
             return None
 
-        return self._extract_message_text(completion)
+    def _chat_completion_via_router(self, url: str, messages: list) -> Optional[str]:
+        payload = {
+            "model": self.model_id,
+            "messages": messages,
+        }
+        data = json.dumps(payload).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+            raise RuntimeError(f"HTTP {exc.code} from HF chat completions: {body or exc}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Failed to reach HF chat completions endpoint: {exc}") from exc
+
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:
+            raise RuntimeError(f"Non-JSON response from HF chat completions: {raw[:2000]}") from exc
+
+        try:
+            return parsed["choices"][0]["message"]["content"]
+        except Exception:
+            # Return full JSON for debugging when schema differs.
+            return json.dumps(parsed)
 
     def _get_client(self) -> InferenceClient:
         if self._client is None:
