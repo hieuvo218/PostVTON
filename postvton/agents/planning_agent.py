@@ -87,8 +87,20 @@ class PlanningAgent:
 		if self.llm is None:
 			raise ValueError("PlanningAgent requires an LLM callable.")
 		graph = self.build_graph()
-		final_state = graph.invoke(PlanningState(report=report))
-		return final_state.plan or PlanResult(error="No plan produced")
+		initial_state = PlanningState(report=report)
+		result = graph.invoke(initial_state)
+
+		if isinstance(result, PlanningState):
+			return result.plan or PlanResult(error="No plan produced")
+
+		if isinstance(result, dict):
+			state = PlanningState(
+				report=result.get("report", report),
+				plan=result.get("plan"),
+			)
+			return state.plan or PlanResult(error="No plan produced")
+
+		return PlanResult(error=f"Unexpected planning state type: {type(result).__name__}")
 
 	# ------------------------------------------------------------------
 	# Internal node

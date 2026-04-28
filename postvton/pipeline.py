@@ -13,7 +13,27 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image
 
+try:
+	from dotenv import load_dotenv
+except Exception:
+	load_dotenv = None
+
 from postvton.manager.manager_agent import ManagerAgent, ManagerState
+
+
+def _load_dotenv_if_available() -> None:
+	"""Load environment variables from .env when python-dotenv is installed."""
+	if load_dotenv is None:
+		return
+	try:
+		project_root = Path(__file__).resolve().parent.parent
+		dotenv_path = project_root / ".env"
+		if dotenv_path.exists():
+			load_dotenv(dotenv_path)
+		else:
+			load_dotenv()
+	except Exception:
+		return
 
 
 def _parse_api_keys(raw: str) -> List[str]:
@@ -50,6 +70,7 @@ def run_pipeline(
 	model_image_path: str,
 	garment_image_path: str,
 	cloth_type: str = "upper",
+	api_keys: Optional[Sequence[str]] = None,
 	output_dir: str = "output",
 	output_name: Optional[str] = None,
 	device: str = "cuda",
@@ -80,6 +101,7 @@ def run_pipeline(
 		person_image=person_image,
 		cloth_image=cloth_image,
 		cloth_type=cloth_type,
+		api_keys=list(api_keys or []),
 		output_path=str(final_output_path),
 		output_dir=output_dir,
 	)
@@ -100,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--model-image", required=True, help="Path to model/person image")
 	parser.add_argument("--garment-image", required=True, help="Path to garment image")
 	parser.add_argument("--cloth-type", default="upper", help="Garment category")
+	parser.add_argument("--api-keys", default="", help="Comma-separated API keys")
 	parser.add_argument("--output-dir", default="output", help="Directory to save final output")
 	parser.add_argument("--output-name", default=None, help="Optional output filename")
 	parser.add_argument("--device", default="cuda", help="Device: cuda or cpu")
@@ -109,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
 	"""CLI entry point for the PostVTON pipeline."""
+	_load_dotenv_if_available()
 	args = build_parser().parse_args()
 
 	try:
@@ -116,6 +140,7 @@ def main() -> int:
 			model_image_path=args.model_image,
 			garment_image_path=args.garment_image,
 			cloth_type=args.cloth_type,
+			api_keys=_parse_api_keys(args.api_keys),
 			output_dir=args.output_dir,
 			output_name=args.output_name,
 			device=args.device,

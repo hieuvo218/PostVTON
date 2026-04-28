@@ -7,10 +7,22 @@ execution in a closed-loop refinement process.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict, fields
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import logging
+import os
 from pathlib import Path
 import uuid
+import json
+
+try:
+	from dotenv import load_dotenv
+except Exception:
+	load_dotenv = None
+
+try:
+	from huggingface_hub import InferenceClient
+except Exception:
+	InferenceClient = None
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +34,7 @@ class ManagerState:
 	person_image: Any
 	cloth_image: Any
 	cloth_type: str
+	api_keys: List[str] = field(default_factory=list)
 	output_path: Optional[str] = None
 	output_dir: str = "output"
 	max_iterations: int = 2
@@ -44,9 +57,30 @@ class ManagerAgent:
 		self,
 		device: str = "cuda",
 		max_iterations: int = 2,
+		planning_llm: Optional[Callable[[str], str]] = None,
+		planning_model_id: str = "zai-org/GLM-5.1:zai-org",
 	):
 		self.device = device
 		self.max_iterations = max_iterations
+		self.planning_model_id = planning_model_id
+		self._planning_client = None
+
+		# Load HF_TOKEN from .env if python-dotenv is available.
+		if load_dotenv is not None:
+			try:
+				load_dotenv()
+			except Exception:
+				pass
+
+		if planning_llm is not None:
+			self.planning_llm = planning_llm
+		else:
+			# Default: use HF InferenceClient if token exists, else deterministic fallback.
+			token = os.environ.get("HF_TOKEN")
+			if token and InferenceClient is not None:
+				self.planning_llm = self._hf_chat_llm
+			else:
+				self.planning_llm = self._default_planning_llm
 
 	def build_graph(self):
 		"""Build and return the LangGraph executable graph."""
@@ -82,6 +116,7 @@ class ManagerAgent:
 		person_image: Any,
 		cloth_image: Any,
 		cloth_type: str,
+		api_keys: Optional[List[str]] = None,
 		output_path: Optional[str] = None,
 		output_dir: str = "output",
 	) -> ManagerState:
@@ -90,6 +125,7 @@ class ManagerAgent:
 			person_image=person_image,
 			cloth_image=cloth_image,
 			cloth_type=cloth_type,
+			api_keys=list(api_keys or []),
 			output_path=output_path,
 			output_dir=output_dir,
 			max_iterations=self.max_iterations,
@@ -160,7 +196,7 @@ class ManagerAgent:
 			})
 			return state
 
-		detector = ProblemDetectionAgent(api_keys=None)
+		detector = ProblemDetectionAgent(api_keys=state.api_keys)
 		report = detector.detect(
 			image=state.tryon_image_pil,
 			original_image=state.person_image_pil,
@@ -171,22 +207,44 @@ class ManagerAgent:
 		return state
 
 	def _node_plan(self, state: ManagerState) -> ManagerState:
-		"""Form a correction plan based on detection report.
+		"""Form a correction plan via PlanningAgent from detection report."""
+		from postvton.agents.planning_agent import PlanningAgent
 
-		This default planner is rule-based to avoid hard dependency on a
-		separate planning agent.
-		"""
 		report = state.detection_report
 		if report is None:
 			state.plan = {"refine_hands": False, "restore_accessories": False}
+			state.history.append({
+				"stage": "plan",
+				"plan": state.plan,
+				"source": "fallback-no-report",
+			})
 			return state
 
-		plan = {
-			"refine_hands": bool(report.hands.distorted),
-			"restore_accessories": bool(report.accessories.missing),
-		}
-		state.plan = plan
-		state.history.append({"stage": "plan", "plan": plan})
+		report_dict = report.to_dict() if hasattr(report, "to_dict") else {}
+		planner = PlanningAgent(llm=self.planning_llm)
+		plan_result = planner.run(report_dict)
+
+		if plan_result.error:
+			fallback_plan = {
+				"refine_hands": bool(getattr(report.hands, "distorted", False)),
+				"restore_accessories": bool(getattr(report.accessories, "missing", False)),
+			}
+			state.plan = fallback_plan
+			state.history.append({
+				"stage": "plan",
+				"plan": fallback_plan,
+				"source": "fallback-error",
+				"planning_error": plan_result.error,
+			})
+			return state
+
+		state.plan = self._map_plan_actions_to_flags(plan_result)
+		state.history.append({
+			"stage": "plan",
+			"plan": state.plan,
+			"plan_actions": [a.to_dict() for a in plan_result.actions],
+			"source": "planning-agent",
+		})
 		return state
 
 	def _node_execute(self, state: ManagerState) -> ManagerState:
@@ -302,6 +360,85 @@ class ManagerAgent:
 			return str(tmp_path)
 
 		return None
+
+	@staticmethod
+	def _map_plan_actions_to_flags(plan_result) -> Dict[str, bool]:
+		"""Map PlanningAgent actions into ExecutionAgent boolean flags."""
+		flags = {
+			"refine_hands": False,
+			"restore_accessories": False,
+		}
+		for item in plan_result.actions:
+			action = str(getattr(item, "action", "")).lower()
+			if any(token in action for token in ("hand", "finger", "palm", "pose")):
+				flags["refine_hands"] = True
+			if any(token in action for token in ("accessor", "watch", "ring", "bracelet", "necklace", "earring")):
+				flags["restore_accessories"] = True
+		return flags
+
+	@staticmethod
+	def _default_planning_llm(prompt: str) -> str:
+		"""Default deterministic planner response when no external LLM is provided."""
+		report = {}
+		marker = "Perception report:"
+		if marker in prompt:
+			try:
+				report = json.loads(prompt.split(marker, 1)[1].strip())
+			except Exception:
+				report = {}
+
+		hands_distorted = bool(report.get("hands", {}).get("distorted", False))
+		accessories_missing = bool(report.get("accessories", {}).get("missing", False))
+
+		actions: List[Dict[str, str]] = []
+		if hands_distorted:
+			actions.append(
+				{
+					"action": "refine_hands",
+					"justification": "Hand distortion detected in report.",
+					"fallback": "skip_hand_refinement",
+				}
+			)
+		if accessories_missing:
+			actions.append(
+				{
+					"action": "restore_accessories",
+					"justification": "Accessory loss detected compared to original image.",
+					"fallback": "skip_accessory_restoration",
+				}
+			)
+
+		if not actions:
+			actions.append(
+				{
+					"action": "noop",
+					"justification": "No actionable visual defects detected.",
+					"fallback": "noop",
+				}
+			)
+
+		return json.dumps({"actions": actions})
+
+	def _hf_chat_llm(self, prompt: str) -> str:
+		"""Call Hugging Face chat completions using GLM (requires HF_TOKEN)."""
+		token = os.environ.get("HF_TOKEN")
+		if not token:
+			raise ValueError("HF_TOKEN is required to call the planning LLM.")
+		if InferenceClient is None:
+			raise ImportError("huggingface_hub is required to call the planning LLM.")
+
+		if self._planning_client is None:
+			self._planning_client = InferenceClient(api_key=token)
+
+		completion = self._planning_client.chat.completions.create(
+			model=self.planning_model_id,
+			messages=[{"role": "user", "content": prompt}],
+		)
+		try:
+			message = completion.choices[0].message
+			return message.content if isinstance(message.content, str) else str(message.content)
+		except Exception:
+			return str(completion)
 
 	# ------------------------------------------------------------------
 	# Flow control
