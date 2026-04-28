@@ -223,9 +223,12 @@ class HandDistortionDetector:
     @staticmethod
     def _image_to_data_url(image: "Image.Image") -> str:
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
+        # JPEG is significantly smaller than PNG for photographic images,
+        # which helps avoid 413 Payload Too Large from hosted inference APIs.
+        image = image.convert("RGB")
+        image.save(buffer, format="JPEG", quality=85, optimize=True)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{encoded}"
+        return f"data:image/jpeg;base64,{encoded}"
 
     @staticmethod
     def _coerce_image(image: "Image.Image") -> Tuple[Optional["Image.Image"], Optional[str]]:
