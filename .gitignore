@@ -135,8 +135,13 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+<<<<<<< HEAD
+# .env
+.env
+=======
 .env
 .envrc
+>>>>>>> 3e40fcb (changes)
 .venv
 env/
 venv/
