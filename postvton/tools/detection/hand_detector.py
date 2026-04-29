@@ -107,7 +107,7 @@ class HandDistortionDetector:
     def __init__(
         self,
         api_keys: Optional[List[str]] = None,
-        model_id: str = "zai-org/GLM-4.6V:zai-org",
+        model_id: str = "zai-org/GLM-4.6V-Flash:novita",
     ):
         if load_dotenv is not None:
             load_dotenv()
