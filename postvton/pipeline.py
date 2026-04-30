@@ -71,6 +71,7 @@ def run_pipeline(
 	garment_image_path: str,
 	cloth_type: str = "upper",
 	api_keys: Optional[Sequence[str]] = None,
+	tryon_server_url: Optional[str] = None,
 	output_dir: str = "output",
 	output_name: Optional[str] = None,
 	device: str = "cuda",
@@ -102,6 +103,7 @@ def run_pipeline(
 		cloth_image=cloth_image,
 		cloth_type=cloth_type,
 		api_keys=list(api_keys or []),
+		tryon_server_url=tryon_server_url,
 		output_path=str(final_output_path),
 		output_dir=output_dir,
 	)
@@ -123,6 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--garment-image", required=True, help="Path to garment image")
 	parser.add_argument("--cloth-type", default="upper", help="Garment category")
 	parser.add_argument("--api-keys", default="", help="Comma-separated API keys")
+	parser.add_argument(
+		"--tryon-server-url",
+		default="",
+		help="Optional FastAPI try-on server base URL (empty = local try-on)",
+	)
 	parser.add_argument("--output-dir", default="output", help="Directory to save final output")
 	parser.add_argument("--output-name", default=None, help="Optional output filename")
 	parser.add_argument("--device", default="cuda", help="Device: cuda or cpu")
@@ -141,6 +148,7 @@ def main() -> int:
 			garment_image_path=args.garment_image,
 			cloth_type=args.cloth_type,
 			api_keys=_parse_api_keys(args.api_keys),
+			tryon_server_url=args.tryon_server_url.strip() or None,
 			output_dir=args.output_dir,
 			output_name=args.output_name,
 			device=args.device,

@@ -1,37 +1,26 @@
-"""TryOn Agent for Virtual Try-On using CatVTON and OOTDiffusion.
+"""TryOn agent client.
 
-The agent always runs both models, scores each result with MediaPipe pose
-cosine similarity against the original person image, and returns the best.
+This repo no longer runs CatVTON/OOTDiffusion locally. Try-on is performed by a
+remote FastAPI server (see postvton.tryon_server).
 """
 
-import shutil
 import sys
 import uuid
 import time
-import traceback
+import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 from dataclasses import dataclass
-from enum import Enum
 
-import cv2
-import mediapipe as mp
-from PIL import Image
-from sklearn.metrics.pairwise import cosine_similarity
+try:
+    import requests
+except Exception:
+    requests = None
 
-# Add project root to path
+from urllib.parse import urljoin
+
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
-
-from postvton.tools.tryon.catvton import CatVTONInference
-from postvton.tools.tryon.ootdiffusion import OOTDiffusionInference
-
-
-class VTONModel(str, Enum):
-    """Available virtual try-on models"""
-    CATVTON = "catvton"
-    OOTDIFFUSION = "ootdiffusion"
-
 
 @dataclass
 class TryOnResult:
@@ -44,76 +33,15 @@ class TryOnResult:
     pose_score: float = 0.0   # cosine pose similarity vs. person image (0.0 = not yet scored)
 
 
-# ---------------------------------------------------------------------------
-# Pose comparison utilities
-# ---------------------------------------------------------------------------
-
-_mp_pose = mp.solutions.pose
-
-
-def _extract_pose_keypoints(image_path: str) -> Optional[List[tuple]]:
-    """Extract MediaPipe pose landmarks from an image file."""
-    img = cv2.imread(image_path)
-    if img is None:
-        return None
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    with _mp_pose.Pose(static_image_mode=True) as pose_estimator:
-        results = pose_estimator.process(img_rgb)
-    if not results.pose_landmarks:
-        return None
-    return [(lm.x, lm.y, lm.visibility) for lm in results.pose_landmarks.landmark]
-
-
-def _pose_to_vector(keypoints: List[tuple], visibility_threshold: float = 0.6) -> List[float]:
-    """Flatten visible pose keypoints into a 1-D feature vector."""
-    return [
-        coord
-        for (x, y, conf) in keypoints
-        if conf > visibility_threshold
-        for coord in (x, y)
-    ]
-
-
-def _cosine_score(pose_a: List[tuple], pose_b: List[tuple]) -> float:
-    """Return cosine similarity in [0, 1] between two pose keypoint sets."""
-    vec_a = _pose_to_vector(pose_a)
-    vec_b = _pose_to_vector(pose_b)
-    min_len = min(len(vec_a), len(vec_b))
-    if min_len == 0:
-        return 0.0
-    score = float(cosine_similarity([vec_a[:min_len]], [vec_b[:min_len]])[0][0])
-    # Clamp to [0.0, 1.0] to handle floating-point precision errors
-    return max(0.0, min(1.0, score))
-
-
-def score_pose_similarity(person_image_path: str, tryon_image_path: str) -> float:
-    """Compute pose cosine similarity between a person and a try-on image.
-
-    Args:
-        person_image_path: Path to the original person photo.
-        tryon_image_path:  Path to the generated try-on result.
-
-    Returns:
-        Cosine similarity in [0, 1]; 0.0 if pose detection fails for either image.
-    """
-    person_pose = _extract_pose_keypoints(person_image_path)
-    tryon_pose  = _extract_pose_keypoints(tryon_image_path)
-    if person_pose is None or tryon_pose is None:
-        return 0.0
-    return _cosine_score(person_pose, tryon_pose)
-
-
 class TryOnAgent:
-    """Runs both CatVTON and OOTDiffusion, scores each result with MediaPipe
-    pose cosine similarity, and returns the best one.
+    """Client that calls the remote try-on server."""
 
-    Args:
-        device: "cuda" or "cpu".
-    """
-
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", server_url: Optional[str] = None, timeout_s: int = 300):
         self.device = device
-        self._models: Dict[VTONModel, object] = {}
+        # server_url is required for try-on; allow env-var fallback.
+        env_url = os.environ.get("TRYON_SERVER_URL")
+        self.server_url = (server_url or env_url or "").strip() or None
+        self.timeout_s = int(timeout_s)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -127,7 +55,7 @@ class TryOnAgent:
         output_path: Optional[str] = None,
         **kwargs,
     ) -> TryOnResult:
-        """Run both try-on models and return the best result.
+        """Call the remote try-on server and return a result.
 
         Args:
             person_image_path: Path to the person image.
@@ -143,129 +71,109 @@ class TryOnAgent:
         Returns:
             TryOnResult of the highest-scoring model with pose_score populated.
         """
-        results: List[TryOnResult] = []
-
-        for model_name in VTONModel:
-            result = self._generate_single(
-                model_name=model_name,
-                person_image_path=person_image_path,
-                cloth_image_path=cloth_image_path,
-                cloth_type=cloth_type,
-                **kwargs,
-            )
-            if result.success and result.output_path:
-                result.pose_score = score_pose_similarity(
-                    person_image_path, result.output_path
-                )
-                print(f"[TryOnAgent] {model_name} pose_score={result.pose_score:.4f}")
-            results.append(result)
-
-        successful = [r for r in results if r.success]
-        if not successful:
+        if not self.server_url:
             return TryOnResult(
                 success=False,
-                message="Both models failed. " + " | ".join(r.message for r in results),
+                message=(
+                    "Remote try-on server URL is not set. "
+                    "Pass --tryon-server-url or set TRYON_SERVER_URL."
+                ),
+                model_used="remote",
             )
 
-        best = max(successful, key=lambda r: r.pose_score)
-        print(f"[TryOnAgent] Best: {best.model_used} (pose_score={best.pose_score:.4f})")
+        return self._generate_remote(
+            person_image_path=person_image_path,
+            cloth_image_path=cloth_image_path,
+            cloth_type=cloth_type,
+            output_path=output_path,
+            **kwargs,
+        )
 
-        if output_path and best.output_path and best.output_path != output_path:
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(best.output_path, output_path)
-            best.output_path = output_path
-
-        return best
-
-    def unload(self):
-        """Unload all loaded models to free GPU memory."""
-        for model_name, model in self._models.items():
-            if hasattr(model, "unload"):
-                model.unload()
-            print(f"[TryOnAgent] Unloaded {model_name}")
-        self._models.clear()
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _load_model(self, model_name: VTONModel):
-        if model_name in self._models:
-            return
-        print(f"[TryOnAgent] Loading {model_name} on {self.device}...")
-        if model_name == VTONModel.CATVTON:
-            self._models[model_name] = CatVTONInference(device=self.device)
-        elif model_name == VTONModel.OOTDIFFUSION:
-            gpu_id = 0 if self.device.startswith("cuda") else -1
-            self._models[model_name] = OOTDiffusionInference(model_type="hd", gpu_id=gpu_id)
-        print(f"[TryOnAgent] {model_name} loaded.")
-
-    def _generate_single(
+    def _generate_remote(
         self,
-        model_name: VTONModel,
         person_image_path: str,
         cloth_image_path: str,
         cloth_type: str,
+        output_path: Optional[str] = None,
         **kwargs,
     ) -> TryOnResult:
-        """Run inference for one model and save output to a temp path."""
-        start = time.time()
-        try:
-            self._load_model(model_name)
-            model = self._models[model_name]
-
-            person_pil = Image.open(person_image_path).convert("RGB")
-            cloth_pil = Image.open(cloth_image_path).convert("RGB")
-
-            if "seed" in kwargs and kwargs["seed"] is None:
-                kwargs["seed"] = -1
-
-            if model_name == VTONModel.CATVTON:
-                raw = model.generate(
-                    person_image=person_pil,
-                    cloth_image=cloth_pil,
-                    cloth_type=cloth_type,
-                    **kwargs,
-                )
-            else:
-                raw = model.generate(
-                    person_image=person_pil,
-                    cloth_image=cloth_pil,
-                    category=cloth_type,
-                    **kwargs,
-                )
-
-            # Normalise to a single PIL Image
-            if isinstance(raw, list):
-                raw = raw[0]
-            elif hasattr(raw, "images"):
-                raw = raw.images[0]
-            if not isinstance(raw, Image.Image):
-                raise RuntimeError(f"Unexpected output type: {type(raw)}")
-
-            out_dir = project_root / "outputs" / "tryon_agent"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = str(out_dir / f"{model_name}_{uuid.uuid4().hex[:8]}.png")
-            raw.save(out_path)
-
-            elapsed = time.time() - start
-            print(f"[TryOnAgent] {model_name} → {out_path} ({elapsed:.2f}s)")
-            return TryOnResult(
-                success=True,
-                output_path=out_path,
-                message=f"Generated with {model_name}",
-                model_used=model_name,
-                inference_time=elapsed,
-            )
-
-        except Exception as exc:
-            traceback.print_exc()
+        if requests is None:
             return TryOnResult(
                 success=False,
-                message=f"{model_name} failed: {exc}",
-                model_used=model_name,
+                message="Remote try-on requires 'requests' (pip install requests).",
+                model_used="remote",
+            )
+
+        start = time.time()
+        server_url = self.server_url.rstrip("/") + "/"
+        tryon_url = urljoin(server_url, "tryon")
+        try:
+            person_p = Path(person_image_path)
+            cloth_p = Path(cloth_image_path)
+            if not person_p.exists():
+                raise FileNotFoundError(f"Person image not found: {person_p}")
+            if not cloth_p.exists():
+                raise FileNotFoundError(f"Cloth image not found: {cloth_p}")
+
+            with open(person_image_path, "rb") as f_person, open(cloth_image_path, "rb") as f_cloth:
+                files = {
+                    "person_image": (Path(person_image_path).name, f_person, "application/octet-stream"),
+                    "cloth_image": (Path(cloth_image_path).name, f_cloth, "application/octet-stream"),
+                }
+                data = {
+                    "cloth_type": cloth_type,
+                    "num_inference_steps": int(kwargs.get("num_inference_steps", 10)),
+                    "guidance_scale": float(kwargs.get("guidance_scale", 2.5)),
+                    "seed": int(kwargs.get("seed", -1) if kwargs.get("seed", -1) is not None else -1),
+                }
+                r = requests.post(tryon_url, data=data, files=files, timeout=self.timeout_s)
+            r.raise_for_status()
+            payload = r.json()
+            if not payload.get("success", False):
+                raise RuntimeError(f"Try-on server returned success=false: {payload}")
+
+            output_url = payload.get("output_url")
+            if not output_url:
+                raise RuntimeError(f"Try-on server response missing output_url: {payload}")
+
+            download_url = urljoin(server_url, output_url.lstrip("/"))
+            img_resp = requests.get(download_url, timeout=self.timeout_s)
+            img_resp.raise_for_status()
+
+            if output_path is None:
+                out_dir = project_root / "outputs" / "tryon_agent"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                output_path = str(out_dir / f"remote_{uuid.uuid4().hex[:8]}.png")
+            else:
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+            with open(output_path, "wb") as f_out:
+                f_out.write(img_resp.content)
+
+            elapsed = time.time() - start
+            server_time = float(payload.get("inference_time") or 0.0)
+            pose_score = float(payload.get("pose_score") or 0.0)
+            model_used = payload.get("model_used") or "remote"
+
+            return TryOnResult(
+                success=True,
+                output_path=output_path,
+                message=f"Generated via try-on server: {tryon_url}",
+                model_used=str(model_used),
+                inference_time=server_time if server_time > 0 else elapsed,
+                pose_score=pose_score,
+            )
+        except Exception as exc:
+            return TryOnResult(
+                success=False,
+                message=f"Remote try-on failed: {exc}",
+                model_used="remote",
                 inference_time=time.time() - start,
             )
+
+    def unload(self):
+        """No-op (models run remotely)."""
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -303,5 +211,4 @@ def run_tryon_agent_sync(
         output_path=output_path,
         **kwargs,
     )
-    agent.unload()
     return result

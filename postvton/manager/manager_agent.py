@@ -35,6 +35,7 @@ class ManagerState:
 	cloth_image: Any
 	cloth_type: str
 	api_keys: List[str] = field(default_factory=list)
+	tryon_server_url: Optional[str] = None
 	output_path: Optional[str] = None
 	output_dir: str = "output"
 	max_iterations: int = 2
@@ -117,6 +118,7 @@ class ManagerAgent:
 		cloth_image: Any,
 		cloth_type: str,
 		api_keys: Optional[List[str]] = None,
+		tryon_server_url: Optional[str] = None,
 		output_path: Optional[str] = None,
 		output_dir: str = "output",
 	) -> ManagerState:
@@ -126,6 +128,7 @@ class ManagerAgent:
 			cloth_image=cloth_image,
 			cloth_type=cloth_type,
 			api_keys=list(api_keys or []),
+			tryon_server_url=tryon_server_url,
 			output_path=output_path,
 			output_dir=output_dir,
 			max_iterations=self.max_iterations,
@@ -162,7 +165,7 @@ class ManagerAgent:
 			})
 			return state
 
-		agent = TryOnAgent(device=self.device)
+		agent = TryOnAgent(device=self.device, server_url=state.tryon_server_url)
 		result = agent.generate(
 			person_image_path=person_path,
 			cloth_image_path=cloth_path,
