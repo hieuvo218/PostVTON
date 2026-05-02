@@ -185,6 +185,8 @@ class ManagerAgent:
 			})
 			return state
 		state.history.append({"stage": "tryon", "success": result.success})
+		# import sys
+		# sys.exit(0)  # Temporary exit to isolate try-on execution during development
 		return state
 
 	def _node_detect(self, state: ManagerState) -> ManagerState:

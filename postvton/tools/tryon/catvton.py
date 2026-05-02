@@ -103,7 +103,7 @@ class CatVTONInference:
         person_image: Union[Image.Image, str],
         cloth_image: Union[Image.Image, str],
         cloth_type: str = "upper",
-        num_inference_steps: int = 10,
+        num_inference_steps: int = 5,
         guidance_scale: float = 2.5,
         seed: Optional[int] = None,
     ) -> Image.Image:
@@ -173,7 +173,7 @@ class CatVTONInference:
         
         # Run inference
         try:
-            print("[CatVTON] Running inference...")
+            print(f"[CatVTON] Running inference with {num_inference_steps} steps...")
             with torch.no_grad():
                 result = self._pipeline(
                     image=person_image,

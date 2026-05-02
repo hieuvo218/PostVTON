@@ -36,7 +36,7 @@ class TryOnResult:
 class TryOnAgent:
     """Client that calls the remote try-on server."""
 
-    def __init__(self, device: str = "cuda", server_url: Optional[str] = None, timeout_s: int = 300):
+    def __init__(self, device: str = "cuda", server_url: Optional[str] = None, timeout_s: int = 3000):
         self.device = device
         # server_url is required for try-on; allow env-var fallback.
         env_url = os.environ.get("TRYON_SERVER_URL")
@@ -122,7 +122,7 @@ class TryOnAgent:
                 }
                 data = {
                     "cloth_type": cloth_type,
-                    "num_inference_steps": int(kwargs.get("num_inference_steps", 10)),
+                    "num_inference_steps": int(kwargs.get("num_inference_steps", 5)),
                     "guidance_scale": float(kwargs.get("guidance_scale", 2.5)),
                     "seed": int(kwargs.get("seed", -1) if kwargs.get("seed", -1) is not None else -1),
                 }

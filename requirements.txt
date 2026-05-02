@@ -17,17 +17,18 @@ omegaconf==2.3.0
 pycocotools==2.0.8
 av==12.3.0
 gradio==4.43.0
-peft==0.17.0
+peft>=0.17.0
 huggingface_hub==0.25.0
 python-dotenv>=1.0.0
 requests>=2.31.0
 carvekit
 config==0.5.1
-einops
-onnxruntime
+einops==0.7.0
+onnxruntime==1.16.2
 # pydantic==2.8.2
 mediapipe==0.10.21
 scikit-learn
 ultralytics
+lannggraph
 git+https://github.com/xinntao/BasicSR.git
 git+https://github.com/ultralytics/CLIP.git

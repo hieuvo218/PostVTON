@@ -216,3 +216,5 @@ notebooks
 outputs/
 tests/yoloe-11l-seg.pt
 tests/mobileclip_blt.ts
+yoloe-11l-seg.pt
+mobileclip_blt.ts
