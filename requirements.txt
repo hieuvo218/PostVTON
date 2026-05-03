@@ -29,6 +29,6 @@ onnxruntime==1.16.2
 mediapipe==0.10.21
 scikit-learn
 ultralytics
-lannggraph
+langgraph
 git+https://github.com/xinntao/BasicSR.git
 git+https://github.com/ultralytics/CLIP.git
