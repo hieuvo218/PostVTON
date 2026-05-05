@@ -24,6 +24,10 @@ Option B (uvicorn directly):
 uvicorn postvton.tryon_server.app:app --host 0.0.0.0 --port 8000
 ```
 
+```
+curl -s -X POST "http://127.0.0.1:8000/tryon" -F "cloth_type=upper" -F "num_inference_steps=5" -F "guidance_scale=2.5" -F "seed=-1" -F "person_image=@external/catvton/resource/demo/example/person/women/049713_0.jpg" -F "cloth_image=@external/catvton/resource/demo/example/condition/upper/24083449_54173465_2048.jpg
+```
+
 Environment variables:
 
 - `TRYON_SERVER_DEVICE` = `cuda` (default) or `cpu`

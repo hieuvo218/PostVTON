@@ -20,6 +20,13 @@ except Exception:
 	load_dotenv = None
 
 try:
+	from google import genai
+	from google.genai import types as genai_types
+except Exception:
+	genai = None
+	genai_types = None
+
+try:
 	from huggingface_hub import InferenceClient
 except Exception:
 	InferenceClient = None
@@ -59,14 +66,17 @@ class ManagerAgent:
 		device: str = "cuda",
 		max_iterations: int = 2,
 		planning_llm: Optional[Callable[[str], str]] = None,
-		planning_model_id: str = "zai-org/GLM-5.1:zai-org",
+		planning_model_id: str = "gemini-3.1-flash-lite-preview",
+		hf_planning_model_id: str = "zai-org/GLM-5.1:zai-org",
 	):
 		self.device = device
 		self.max_iterations = max_iterations
 		self.planning_model_id = planning_model_id
-		self._planning_client = None
+		self.hf_planning_model_id = hf_planning_model_id
+		self._gemini_client = None
+		self._hf_client = None
 
-		# Load HF_TOKEN from .env if python-dotenv is available.
+		# Load API keys from .env if python-dotenv is available.
 		if load_dotenv is not None:
 			try:
 				load_dotenv()
@@ -76,9 +86,12 @@ class ManagerAgent:
 		if planning_llm is not None:
 			self.planning_llm = planning_llm
 		else:
-			# Default: use HF InferenceClient if token exists, else deterministic fallback.
-			token = os.environ.get("HF_TOKEN")
-			if token and InferenceClient is not None:
+			# Default: prefer Gemini when available; fall back to HF; else deterministic fallback.
+			gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+			hf_key = os.environ.get("HF_TOKEN")
+			if gemini_key and genai is not None and genai_types is not None:
+				self.planning_llm = self._gemini_planning_llm
+			elif hf_key and InferenceClient is not None:
 				self.planning_llm = self._hf_chat_llm
 			else:
 				self.planning_llm = self._default_planning_llm
@@ -432,11 +445,11 @@ class ManagerAgent:
 		if InferenceClient is None:
 			raise ImportError("huggingface_hub is required to call the planning LLM.")
 
-		if self._planning_client is None:
-			self._planning_client = InferenceClient(api_key=token)
+		if self._hf_client is None:
+			self._hf_client = InferenceClient(api_key=token)
 
-		completion = self._planning_client.chat.completions.create(
-			model=self.planning_model_id,
+		completion = self._hf_client.chat.completions.create(
+			model=self.hf_planning_model_id,
 			messages=[{"role": "user", "content": prompt}],
 		)
 		try:
@@ -444,6 +457,31 @@ class ManagerAgent:
 			return message.content if isinstance(message.content, str) else str(message.content)
 		except Exception:
 			return str(completion)
+
+	def _gemini_planning_llm(self, prompt: str) -> str:
+		"""Call Google Gemini to produce JSON planning output.
+
+		Requires GEMINI_API_KEY or GOOGLE_API_KEY and the `google-genai` package.
+		"""
+		api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+		if not api_key:
+			raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required to call the planning LLM.")
+		if genai is None or genai_types is None:
+			raise ImportError("google-genai is required to call the planning LLM.")
+
+		if self._gemini_client is None:
+			self._gemini_client = genai.Client(api_key=api_key)
+
+		response = self._gemini_client.models.generate_content(
+			model=self.planning_model_id,
+			contents=[prompt],
+			config=genai_types.GenerateContentConfig(
+				temperature=0.2,
+				response_mime_type="application/json",
+			),
+		)
+		text = getattr(response, "text", None)
+		return text if isinstance(text, str) else str(text or response)
 
 	# ------------------------------------------------------------------
 	# Flow control

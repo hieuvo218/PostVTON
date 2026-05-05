@@ -101,7 +101,11 @@ class MissingAccessoryResult:
 class MissingAccessoryDetector:
     """Detect and compare accessories between original and try-on images."""
 
-    DEFAULT_CLASSES: List[str] = ["bracelet", "watch"]
+    DEFAULT_CLASSES: List[str] = [
+    "ring", "necklace", "bracelet",
+    "handbag", "shoulder bag",
+    "neckband", "sling", "strap", "icebag",
+]
 
     def __init__(
         self,
