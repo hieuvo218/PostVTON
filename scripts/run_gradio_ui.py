@@ -204,7 +204,7 @@ def main() -> None:
     demo.launch(
         server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"),
         server_port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
-        share=bool(os.environ.get("GRADIO_SHARE", True).strip()),
+        share=True,
     )
 
 
