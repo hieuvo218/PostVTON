@@ -50,6 +50,8 @@ class ManagerState:
 
 	tryon_result: Optional[Any] = None
 	tryon_output_path: Optional[str] = None
+	raw_tryon_output_path: Optional[str] = None
+	tryon_candidate_outputs: Optional[Dict[str, str]] = None
 	person_image_pil: Optional[Any] = None
 	tryon_image_pil: Optional[Any] = None
 	detection_report: Optional[Any] = None
@@ -187,6 +189,8 @@ class ManagerAgent:
 		)
 		state.tryon_result = result
 		state.tryon_output_path = result.output_path
+		state.raw_tryon_output_path = result.output_path
+		state.tryon_candidate_outputs = getattr(result, "candidate_output_paths", None)
 		state.person_image_pil = self._to_pil(state.person_image)
 		if result.output_path:
 			state.tryon_image_pil = self._to_pil(result.output_path)

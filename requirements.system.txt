@@ -31,5 +31,6 @@ scikit-learn
 ultralytics
 langgraph
 google-genai
+bitsandbytes>=0.46.1
 git+https://github.com/xinntao/BasicSR.git
 git+https://github.com/ultralytics/CLIP.git

@@ -27,6 +27,7 @@ class TryOnResult:
     """Result from a try-on operation"""
     success: bool
     output_path: Optional[str] = None
+    candidate_output_paths: Optional[dict] = None
     message: str = ""
     model_used: Optional[str] = None
     inference_time: float = 0.0
@@ -132,6 +133,8 @@ class TryOnAgent:
             if not payload.get("success", False):
                 raise RuntimeError(f"Try-on server returned success=false: {payload}")
 
+            job_id = str(payload.get("job_id") or "").strip() or uuid.uuid4().hex[:12]
+
             output_url = payload.get("output_url")
             if not output_url:
                 raise RuntimeError(f"Try-on server response missing output_url: {payload}")
@@ -150,6 +153,31 @@ class TryOnAgent:
             with open(output_path, "wb") as f_out:
                 f_out.write(img_resp.content)
 
+            # Optional: download per-candidate images if server returned output_url for them.
+            candidate_paths = {}
+            try:
+                candidates = payload.get("candidates") or []
+                if isinstance(candidates, list):
+                    cand_dir = project_root / "outputs" / "tryon_agent" / "candidates" / job_id
+                    cand_dir.mkdir(parents=True, exist_ok=True)
+                    for cand in candidates:
+                        if not isinstance(cand, dict):
+                            continue
+                        model_name = str(cand.get("model_used") or "").strip() or "candidate"
+                        cand_url = cand.get("output_url")
+                        if not cand_url:
+                            continue
+                        dl = urljoin(server_url, str(cand_url).lstrip("/"))
+                        resp = requests.get(dl, timeout=self.timeout_s)
+                        resp.raise_for_status()
+                        safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in model_name)
+                        cand_path = cand_dir / f"{safe}.png"
+                        with open(cand_path, "wb") as f_c:
+                            f_c.write(resp.content)
+                        candidate_paths[model_name] = str(cand_path)
+            except Exception:
+                candidate_paths = {}
+
             elapsed = time.time() - start
             server_time = float(payload.get("inference_time") or 0.0)
             pose_score = float(payload.get("pose_score") or 0.0)
@@ -158,6 +186,7 @@ class TryOnAgent:
             return TryOnResult(
                 success=True,
                 output_path=output_path,
+                candidate_output_paths=candidate_paths or None,
                 message=f"Generated via try-on server: {tryon_url}",
                 model_used=str(model_used),
                 inference_time=server_time if server_time > 0 else elapsed,

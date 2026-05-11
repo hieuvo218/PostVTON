@@ -117,6 +117,7 @@ class _TryOnCandidate:
 	pose_score: float = 0.0
 	error: Optional[str] = None
 	inference_time: float = 0.0
+	output_url: Optional[str] = None
 
 	def to_dict(self) -> dict:
 		return {
@@ -124,6 +125,7 @@ class _TryOnCandidate:
 			"pose_score": float(self.pose_score),
 			"inference_time": float(self.inference_time),
 			"error": self.error,
+			"output_url": self.output_url,
 		}
 
 
@@ -282,6 +284,19 @@ def tryon(
 	if best is None or best.image is None:
 		errors = [c.to_dict() for c in candidates]
 		raise HTTPException(status_code=500, detail={"message": "Both models failed", "details": errors})
+
+	# Save per-candidate images (when available) so clients/UIs can display them.
+	for cand in candidates:
+		if cand.image is None:
+			continue
+		safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in cand.model_used)
+		cand_filename = f"{job_id}_{safe_name}.png"
+		cand_path = _OUTPUT_DIR / cand_filename
+		try:
+			cand.image.save(cand_path)
+			cand.output_url = f"/outputs/{cand_filename}"
+		except Exception:
+			cand.output_url = None
 
 	best.image.save(out_path)
 
