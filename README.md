@@ -4,6 +4,16 @@ An agentic framewok with post processing stage enhance realism, robustness, scal
 # Key Idea (Agentic Post-Processing)
 # Framework Overview (Diagram)
 # Installation
+
+For development (recommended), install the package in editable mode:
+
+`pip install -e .`
+
+Then install the full dependency stack you need:
+
+- System/UI: `pip install -r requirements.system.txt`
+- Try-on server: `pip install -r requirements.tryon_server.txt`
+
 # Quick Start
 # Run Try-On Server (CatVTON + OOTDiffusion)
 
