@@ -46,6 +46,7 @@ class ManagerState:
 	output_path: Optional[str] = None
 	output_dir: str = "output"
 	max_iterations: int = 2
+	num_inference_steps: int = 5
 	iterations: int = 0
 
 	tryon_result: Optional[Any] = None
@@ -136,6 +137,7 @@ class ManagerAgent:
 		tryon_server_url: Optional[str] = None,
 		output_path: Optional[str] = None,
 		output_dir: str = "output",
+		num_inference_steps: int = 5,
 	) -> ManagerState:
 		"""Run the manager orchestration loop and return final state."""
 		state = ManagerState(
@@ -147,6 +149,7 @@ class ManagerAgent:
 			output_path=output_path,
 			output_dir=output_dir,
 			max_iterations=self.max_iterations,
+			num_inference_steps=num_inference_steps,
 		)
 		graph = self.build_graph()
 		result = graph.invoke(state)
@@ -186,6 +189,7 @@ class ManagerAgent:
 			cloth_image_path=cloth_path,
 			cloth_type=state.cloth_type,
 			output_path=None,
+			num_inference_steps=state.num_inference_steps,
 		)
 		state.tryon_result = result
 		state.tryon_output_path = result.output_path

@@ -76,6 +76,7 @@ def run_pipeline(
 	output_name: Optional[str] = None,
 	device: str = "cuda",
 	max_iterations: int = 2,
+	num_inference_steps: int = 5,
 ) -> Tuple[Path, ManagerState]:
 	"""Run full virtual try-on orchestration and save the final image.
 
@@ -106,6 +107,7 @@ def run_pipeline(
 		tryon_server_url=tryon_server_url,
 		output_path=str(final_output_path),
 		output_dir=output_dir,
+		num_inference_steps=num_inference_steps,
 	)
 
 	if not final_output_path.exists():
@@ -134,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--output-name", default=None, help="Optional output filename")
 	parser.add_argument("--device", default="cuda", help="Device: cuda or cpu")
 	parser.add_argument("--max-iterations", type=int, default=2, help="Manager refinement loop cap")
+	parser.add_argument("--num-inference-steps", type=int, default=5, help="Denoising steps for CatVTON/OOTDiffusion")
 	return parser
 
 
@@ -153,6 +156,7 @@ def main() -> int:
 			output_name=args.output_name,
 			device=args.device,
 			max_iterations=args.max_iterations,
+			num_inference_steps=args.num_inference_steps,
 		)
 	except (FileNotFoundError, ValueError, RuntimeError) as exc:
 		print(f"[ERROR] {exc}")

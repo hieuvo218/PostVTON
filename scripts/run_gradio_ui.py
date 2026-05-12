@@ -67,6 +67,7 @@ def run_postvton(
     tryon_server_url: str,
     device: str,
     max_iterations: int,
+    num_inference_step: int,
 ):
     if not person_image_path or not cloth_image_path:
         raise gr.Error("Please upload both a person image and a clothing image.")
@@ -96,6 +97,7 @@ def run_postvton(
         output_name=f"{run_id}.png",
         device=(device or "cuda"),
         max_iterations=int(max_iterations),
+        num_inference_steps=int(num_inference_step),
     )
 
     cat_path, oot_path = _pick_candidate_paths(getattr(state, "tryon_candidate_outputs", None))
@@ -128,6 +130,7 @@ def _build_examples():
             "",  # tryon_server_url
             "cuda",
             2,
+            5,
         ])
     return pairs
 
@@ -156,6 +159,7 @@ def build_ui() -> gr.Blocks:
 
                     device = gr.Dropdown(["cuda", "cpu"], value="cuda", label="Device")
                     max_iterations = gr.Slider(1, 4, value=2, step=1, label="Max Iterations")
+                    num_inference_step = gr.Slider(1, 50, value=5, step=1, label="Num Inference Step")
 
             with gr.Column(scale=2):
                 with gr.Row():
@@ -173,6 +177,7 @@ def build_ui() -> gr.Blocks:
                 tryon_server_url,
                 device,
                 max_iterations,
+                num_inference_step,
             ],
             outputs=[catvton_out, oot_out, final_out],
         )
@@ -188,6 +193,7 @@ def build_ui() -> gr.Blocks:
                     tryon_server_url,
                     device,
                     max_iterations,
+                    num_inference_step,
                 ],
                 outputs=[catvton_out, oot_out, final_out],
                 fn=run_postvton,
