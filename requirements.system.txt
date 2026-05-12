@@ -24,13 +24,13 @@ requests>=2.31.0
 carvekit
 config==0.5.1
 einops==0.7.0
-onnxruntime==1.16.2
 # pydantic==2.8.2
 mediapipe==0.10.21
+bitsandbytes>=0.46.1
 scikit-learn
 ultralytics
 langgraph
 google-genai
-bitsandbytes>=0.46.1
+onnxruntime
 git+https://github.com/xinntao/BasicSR.git
 git+https://github.com/ultralytics/CLIP.git
