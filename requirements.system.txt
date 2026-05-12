@@ -30,7 +30,6 @@ bitsandbytes>=0.46.1
 scikit-learn
 ultralytics
 langgraph
-google-genai
 onnxruntime
 git+https://github.com/xinntao/BasicSR.git
 git+https://github.com/ultralytics/CLIP.git
