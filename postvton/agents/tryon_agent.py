@@ -8,8 +8,9 @@ import sys
 import uuid
 import time
 import os
+import io
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Union, Any
 from dataclasses import dataclass
 
 try:
@@ -50,8 +51,8 @@ class TryOnAgent:
 
     def generate(
         self,
-        person_image_path: str,
-        cloth_image_path: str,
+        person_image_path: Union[str, Any],
+        cloth_image_path: Union[str, Any],
         cloth_type: str = "upper",
         output_path: Optional[str] = None,
         **kwargs,
@@ -90,10 +91,37 @@ class TryOnAgent:
             **kwargs,
         )
 
+    @staticmethod
+    def _prepare_upload(image_input: Union[str, Any], fallback_name: str) -> Tuple[str, Any]:
+        """Convert a path or PIL image into an in-memory PNG upload."""
+        try:
+            from PIL import Image
+        except Exception as exc:
+            raise ImportError("PIL is required to prepare try-on uploads.") from exc
+
+        filename = fallback_name
+        image_obj = image_input
+
+        if isinstance(image_input, (str, Path)):
+            path = Path(image_input)
+            if not path.exists():
+                raise FileNotFoundError(f"Image not found: {path}")
+            filename = path.stem + ".png"
+            image_obj = Image.open(path).convert("RGB")
+        elif isinstance(image_input, Image.Image):
+            image_obj = image_input.convert("RGB")
+        else:
+            raise TypeError(f"Unsupported image input type for upload: {type(image_input).__name__}")
+
+        buffer = io.BytesIO()
+        image_obj.save(buffer, format="PNG")
+        buffer.seek(0)
+        return filename, buffer
+
     def _generate_remote(
         self,
-        person_image_path: str,
-        cloth_image_path: str,
+        person_image_path: Union[str, Any],
+        cloth_image_path: Union[str, Any],
         cloth_type: str,
         output_path: Optional[str] = None,
         **kwargs,
@@ -109,25 +137,20 @@ class TryOnAgent:
         server_url = self.server_url.rstrip("/") + "/"
         tryon_url = urljoin(server_url, "tryon")
         try:
-            person_p = Path(person_image_path)
-            cloth_p = Path(cloth_image_path)
-            if not person_p.exists():
-                raise FileNotFoundError(f"Person image not found: {person_p}")
-            if not cloth_p.exists():
-                raise FileNotFoundError(f"Cloth image not found: {cloth_p}")
+            person_name, person_buf = self._prepare_upload(person_image_path, "person.png")
+            cloth_name, cloth_buf = self._prepare_upload(cloth_image_path, "cloth.png")
 
-            with open(person_image_path, "rb") as f_person, open(cloth_image_path, "rb") as f_cloth:
-                files = {
-                    "person_image": (Path(person_image_path).name, f_person, "application/octet-stream"),
-                    "cloth_image": (Path(cloth_image_path).name, f_cloth, "application/octet-stream"),
-                }
-                data = {
-                    "cloth_type": cloth_type,
-                    "num_inference_steps": int(kwargs.get("num_inference_steps", 5)),
-                    "guidance_scale": float(kwargs.get("guidance_scale", 2.5)),
-                    "seed": int(kwargs.get("seed", -1) if kwargs.get("seed", -1) is not None else -1),
-                }
-                r = requests.post(tryon_url, data=data, files=files, timeout=self.timeout_s)
+            files = {
+                "person_image": (person_name, person_buf, "image/png"),
+                "cloth_image": (cloth_name, cloth_buf, "image/png"),
+            }
+            data = {
+                "cloth_type": cloth_type,
+                "num_inference_steps": int(kwargs.get("num_inference_steps", 5)),
+                "guidance_scale": float(kwargs.get("guidance_scale", 2.5)),
+                "seed": int(kwargs.get("seed", -1) if kwargs.get("seed", -1) is not None else -1),
+            }
+            r = requests.post(tryon_url, data=data, files=files, timeout=self.timeout_s)
             r.raise_for_status()
             payload = r.json()
             if not payload.get("success", False):

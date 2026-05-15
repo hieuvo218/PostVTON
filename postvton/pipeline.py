@@ -77,6 +77,7 @@ def run_pipeline(
 	device: str = "cuda",
 	max_iterations: int = 2,
 	num_inference_steps: int = 5,
+	workflow_mode: str = "whole_workflow",
 ) -> Tuple[Path, ManagerState]:
 	"""Run full virtual try-on orchestration and save the final image.
 
@@ -89,6 +90,8 @@ def run_pipeline(
 		output_name: Optional explicit filename (".png" appended if missing).
 		device: Device hint for model components ("cuda" or "cpu").
 		max_iterations: Manager refinement loop upper bound.
+		workflow_mode: Workflow preset: whole_workflow, pose_only,
+			pose_accessory_edit, or pose_hand_fix.
 
 	Returns:
 		Tuple of (saved_output_path, final_manager_state).
@@ -108,6 +111,7 @@ def run_pipeline(
 		output_path=str(final_output_path),
 		output_dir=output_dir,
 		num_inference_steps=num_inference_steps,
+		workflow_mode=workflow_mode,
 	)
 
 	if not final_output_path.exists():
@@ -137,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--device", default="cuda", help="Device: cuda or cpu")
 	parser.add_argument("--max-iterations", type=int, default=2, help="Manager refinement loop cap")
 	parser.add_argument("--num-inference-steps", type=int, default=5, help="Denoising steps for CatVTON/OOTDiffusion")
+	parser.add_argument(
+		"--workflow-mode",
+		default="whole_workflow",
+		choices=["whole_workflow", "pose_only", "pose_accessory_edit", "pose_hand_fix"],
+		help="Workflow mode to run",
+	)
 	return parser
 
 
@@ -157,6 +167,7 @@ def main() -> int:
 			device=args.device,
 			max_iterations=args.max_iterations,
 			num_inference_steps=args.num_inference_steps,
+			workflow_mode=args.workflow_mode,
 		)
 	except (FileNotFoundError, ValueError, RuntimeError) as exc:
 		print(f"[ERROR] {exc}")

@@ -28,6 +28,12 @@ except Exception as exc:  # pragma: no cover
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _OUTPUT_ROOT = _PROJECT_ROOT / "outputs" / "gradio_ui"
+_WORKFLOW_MODE_CHOICES = [
+    "Whole workflow",
+    "Pose only",
+    "Pose + accessory edit",
+    "Pose + hand fix",
+]
 
 
 def _ensure_dir(path: Path) -> None:
@@ -42,6 +48,18 @@ def _map_cloth_type(ui_value: str) -> str:
     if v.startswith("lower"):
         return "lower"
     return "overall"
+
+
+def _map_workflow_mode(ui_value: str) -> str:
+    """Map UI workflow mode -> pipeline workflow mode."""
+    value = (ui_value or "").strip().lower()
+    if value == "pose only":
+        return "pose_only"
+    if "accessory" in value:
+        return "pose_accessory_edit"
+    if "hand" in value:
+        return "pose_hand_fix"
+    return "whole_workflow"
 
 
 def _pick_candidate_paths(candidate_outputs: Optional[dict]) -> Tuple[Optional[str], Optional[str]]:
@@ -63,6 +81,7 @@ def run_postvton(
     person_image_path: str,
     cloth_image_path: str,
     cloth_type: str,
+    workflow_mode: str,
     gemini_api_key: str,
     tryon_server_url: str,
     device: str,
@@ -98,6 +117,7 @@ def run_postvton(
         device=(device or "cuda"),
         max_iterations=int(max_iterations),
         num_inference_steps=int(num_inference_step),
+        workflow_mode=_map_workflow_mode(workflow_mode),
     )
 
     cat_path, oot_path = _pick_candidate_paths(getattr(state, "tryon_candidate_outputs", None))
@@ -126,6 +146,7 @@ def _build_examples():
             str(models[i]),
             str(garments[i]),
             "Upper",
+            "Whole workflow",
             "",  # gemini_api_key
             "",  # tryon_server_url
             "cuda",
@@ -146,6 +167,11 @@ def build_ui() -> gr.Blocks:
                 person_image = gr.Image(label="Person Image", type="filepath")
                 cloth_image = gr.Image(label="Clothing Image", type="filepath")
                 cloth_type = gr.Radio(["Upper", "Lower", "Dress"], value="Upper", label="Cloth Type")
+                workflow_mode = gr.Radio(
+                    _WORKFLOW_MODE_CHOICES,
+                    value="Whole workflow",
+                    label="Workflow Mode",
+                )
 
                 run_btn = gr.Button("Run PostVTON")
 
@@ -173,6 +199,7 @@ def build_ui() -> gr.Blocks:
                 person_image,
                 cloth_image,
                 cloth_type,
+                workflow_mode,
                 gemini_api_key,
                 tryon_server_url,
                 device,
@@ -189,6 +216,7 @@ def build_ui() -> gr.Blocks:
                     person_image,
                     cloth_image,
                     cloth_type,
+                    workflow_mode,
                     gemini_api_key,
                     tryon_server_url,
                     device,

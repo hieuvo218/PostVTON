@@ -23,7 +23,7 @@ class CatVTONInference:
     
     def __init__(
         self,
-        base_model_path: str = "stable-diffusion-v1-5/stable-diffusion-inpainting",
+        base_model_path: str = "runwayml/stable-diffusion-inpainting",
         resume_path: str = "zhengchong/CatVTON",
         dataset_name: str = "dresscode",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -103,7 +103,7 @@ class CatVTONInference:
         person_image: Union[Image.Image, str],
         cloth_image: Union[Image.Image, str],
         cloth_type: str = "upper",
-        num_inference_steps: int = 5,
+        num_inference_steps: int = 10,
         guidance_scale: float = 2.5,
         seed: Optional[int] = None,
     ) -> Image.Image:

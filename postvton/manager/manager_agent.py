@@ -47,6 +47,7 @@ class ManagerState:
 	output_dir: str = "output"
 	max_iterations: int = 2
 	num_inference_steps: int = 5
+	workflow_mode: str = "whole_workflow"
 	iterations: int = 0
 
 	tryon_result: Optional[Any] = None
@@ -117,7 +118,11 @@ class ManagerAgent:
 		graph.add_node("execute", self._node_execute)
 
 		graph.set_entry_point("tryon")
-		graph.add_edge("tryon", "detect")
+		graph.add_conditional_edges(
+			"tryon",
+			self._after_tryon,
+			{"detect": "detect", "execute": "execute", "end": END},
+		)
 		graph.add_edge("detect", "plan")
 		graph.add_edge("plan", "execute")
 		graph.add_conditional_edges(
@@ -138,6 +143,7 @@ class ManagerAgent:
 		output_path: Optional[str] = None,
 		output_dir: str = "output",
 		num_inference_steps: int = 5,
+		workflow_mode: str = "whole_workflow",
 	) -> ManagerState:
 		"""Run the manager orchestration loop and return final state."""
 		state = ManagerState(
@@ -150,6 +156,7 @@ class ManagerAgent:
 			output_dir=output_dir,
 			max_iterations=self.max_iterations,
 			num_inference_steps=num_inference_steps,
+			workflow_mode=self._normalize_workflow_mode(workflow_mode),
 		)
 		graph = self.build_graph()
 		result = graph.invoke(state)
@@ -173,20 +180,10 @@ class ManagerAgent:
 
 	def _node_tryon(self, state: ManagerState) -> ManagerState:
 		from postvton.agents.tryon_agent import TryOnAgent
-		person_path = self._resolve_image_path(state.person_image, "person", state.output_dir)
-		cloth_path = self._resolve_image_path(state.cloth_image, "cloth", state.output_dir)
-		if person_path is None or cloth_path is None:
-			state.history.append({
-				"stage": "tryon",
-				"success": False,
-				"error": "Could not resolve person/cloth inputs to valid image paths.",
-			})
-			return state
-
 		agent = TryOnAgent(device=self.device, server_url=state.tryon_server_url)
 		result = agent.generate(
-			person_image_path=person_path,
-			cloth_image_path=cloth_path,
+			person_image_path=state.person_image,
+			cloth_image_path=state.cloth_image,
 			cloth_type=state.cloth_type,
 			output_path=None,
 			num_inference_steps=state.num_inference_steps,
@@ -205,6 +202,14 @@ class ManagerAgent:
 				"error": "Failed to load PIL images for manager pipeline.",
 			})
 			return state
+		if state.workflow_mode == "pose_only":
+			final_output = self._resolve_final_output(state)
+			if final_output:
+				Path(final_output).parent.mkdir(parents=True, exist_ok=True)
+				state.tryon_image_pil.save(final_output)
+				state.tryon_output_path = final_output
+				if state.tryon_result is not None:
+					state.tryon_result.output_path = final_output
 		state.history.append({"stage": "tryon", "success": result.success})
 		# import sys
 		# sys.exit(0)  # Temporary exit to isolate try-on execution during development
@@ -285,7 +290,7 @@ class ManagerAgent:
 			})
 			return state
 
-		plan = state.plan or {"refine_hands": False, "restore_accessories": False}
+		plan = state.plan or self._workflow_mode_plan(state.workflow_mode)
 		executor = ExecutionAgent()
 		result = executor.execute(
 			original_image=state.person_image_pil,
@@ -306,6 +311,40 @@ class ManagerAgent:
 		state.iterations += 1
 		state.history.append({"stage": "execute", "success": result.success})
 		return state
+
+	@staticmethod
+	def _normalize_workflow_mode(mode: str) -> str:
+		value = (mode or "whole_workflow").strip().lower().replace("-", "_").replace(" ", "_")
+		aliases = {
+			"whole": "whole_workflow",
+			"full": "whole_workflow",
+			"full_workflow": "whole_workflow",
+			"whole_workflow": "whole_workflow",
+			"pose": "pose_only",
+			"pose_only": "pose_only",
+			"pose_accessory": "pose_accessory_edit",
+			"pose_accessory_edit": "pose_accessory_edit",
+			"pose_plus_accessory_edit": "pose_accessory_edit",
+			"pose_+_accessory_edit": "pose_accessory_edit",
+			"pose_hand": "pose_hand_fix",
+			"pose_hand_fix": "pose_hand_fix",
+			"pose_plus_hand_fix": "pose_hand_fix",
+			"pose_+_hand_fix": "pose_hand_fix",
+		}
+		if value not in aliases:
+			raise ValueError(
+				"workflow_mode must be one of: whole_workflow, pose_only, "
+				"pose_accessory_edit, pose_hand_fix"
+			)
+		return aliases[value]
+
+	@staticmethod
+	def _workflow_mode_plan(mode: str) -> Dict[str, bool]:
+		if mode == "pose_accessory_edit":
+			return {"refine_hands": False, "restore_accessories": True}
+		if mode == "pose_hand_fix":
+			return {"refine_hands": True, "restore_accessories": False}
+		return {"refine_hands": False, "restore_accessories": False}
 
 	@staticmethod
 	def _to_pil(image_input: Any) -> Optional[Any]:
@@ -495,7 +534,17 @@ class ManagerAgent:
 	# Flow control
 	# ------------------------------------------------------------------
 
+	def _after_tryon(self, state: ManagerState) -> str:
+		if state.workflow_mode == "pose_only":
+			return "end"
+		if state.workflow_mode in ("pose_accessory_edit", "pose_hand_fix"):
+			return "execute"
+		return "detect"
+
 	def _should_continue(self, state: ManagerState) -> str:
+		if state.workflow_mode != "whole_workflow":
+			return "end"
+
 		if state.iterations >= state.max_iterations:
 			return "end"
 
