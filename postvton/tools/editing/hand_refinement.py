@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 import logging
 
 import numpy as np
@@ -32,6 +32,7 @@ class HandRefinementResult:
     output_image: Optional[Image.Image]
     image_size: Optional[tuple[int, int]] = None
     error: Optional[str] = None
+    detail: dict[str, Any] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +40,7 @@ class HandRefinementResult:
             "output_image": self.output_image is not None,
             "image_size": list(self.image_size) if self.image_size else None,
             "error": self.error,
+            "detail": dict(self.detail or {}),
         }
 
 
@@ -114,6 +116,7 @@ class HandRefiner:
                 hand_boxes = self._detect_hand_boxes(input_img)
                 if hand_boxes:
                     refined = input_img.copy()
+                    crop_boxes = []
                     for box in hand_boxes:
                         crop_box = self._expand_box(
                             box=box,
@@ -121,6 +124,7 @@ class HandRefiner:
                             padding_ratio=hand_padding_ratio,
                             min_size=min_crop_size,
                         )
+                        crop_boxes.append(crop_box)
                         crop = input_img.crop(crop_box)
                         edited_crop = self._run_qwen_edit(
                             image=crop,
@@ -143,6 +147,12 @@ class HandRefiner:
                         success=True,
                         output_image=refined,
                         image_size=(width, height),
+                        detail={
+                            "mode": "localized",
+                            "hand_boxes": [list(box) for box in hand_boxes],
+                            "crop_boxes": [list(box) for box in crop_boxes],
+                            "crop_count": len(crop_boxes),
+                        },
                     )
 
                 if not fallback_to_global_edit:
@@ -152,6 +162,11 @@ class HandRefiner:
                         output_image=input_img.copy(),
                         image_size=(width, height),
                         error="No hand crop detected; skipped global hand refinement to preserve image quality.",
+                        detail={
+                            "mode": "skipped",
+                            "reason": "no_hand_crop_detected",
+                            "crop_count": 0,
+                        },
                     )
 
             refined = self._run_qwen_edit(
@@ -170,6 +185,10 @@ class HandRefiner:
                 success=True,
                 output_image=refined,
                 image_size=(width, height),
+                detail={
+                    "mode": "global",
+                    "crop_count": 0,
+                },
             )
         except Exception as exc:
             logger.exception("Hand refinement failed")

@@ -458,7 +458,10 @@ class ManagerAgent:
 				"fix_hand",
 				"repair_hands",
 				"repair_hand",
-			}:
+			} or (
+				any(token in action for token in ("hand", "finger", "palm", "anatomical"))
+				and any(token in action for token in ("refine", "fix", "repair", "inpaint", "mask", "high_resolution"))
+			):
 				flags["refine_hands"] = True
 			if action in {
 				"restore_accessories",
@@ -466,7 +469,10 @@ class ManagerAgent:
 				"restore_accessory",
 				"fix_accessories",
 				"fix_accessory",
-			}:
+			} or (
+				any(token in action for token in ("accessory", "accessories", "watch", "ring", "bracelet", "necklace", "earring"))
+				and any(token in action for token in ("restore", "fix", "repair", "recover", "paste", "composite"))
+			):
 				flags["restore_accessories"] = True
 		return flags
 

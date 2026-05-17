@@ -166,6 +166,17 @@ def _build_run_summary(state) -> str:
                 for step in steps
             ]
             lines.append(f"Execution steps: {', '.join(step_names)}")
+            lines.append("Execution step details:")
+            for idx, step in enumerate(steps, start=1):
+                name = getattr(step, "name", "unknown")
+                success = bool(getattr(step, "success", False))
+                lines.append(f"{idx}. {name}: success={success}")
+                step_error = getattr(step, "error", None)
+                if step_error:
+                    lines.append(f"   error: {step_error}")
+                detail = getattr(step, "detail", None)
+                if detail:
+                    lines.append(json.dumps(detail, indent=2, ensure_ascii=False))
 
     return "\n".join(lines)
 
