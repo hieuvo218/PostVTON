@@ -253,13 +253,21 @@ class ManagerAgent:
 
 		report_dict = report.to_dict() if hasattr(report, "to_dict") else {}
 		planner = PlanningAgent(llm=self.planning_llm)
-		plan_result = planner.run(report_dict)
+		try:
+			plan_result = planner.run(report_dict)
+		except Exception as exc:
+			fallback_plan = self._fallback_plan_from_report(report)
+			state.plan = fallback_plan
+			state.history.append({
+				"stage": "plan",
+				"plan": fallback_plan,
+				"source": "fallback-exception",
+				"planning_error": str(exc),
+			})
+			return state
 
 		if plan_result.error:
-			fallback_plan = {
-				"refine_hands": bool(getattr(report.hands, "distorted", False)),
-				"restore_accessories": bool(getattr(report.accessories, "missing", False)),
-			}
+			fallback_plan = self._fallback_plan_from_report(report)
 			state.plan = fallback_plan
 			state.history.append({
 				"stage": "plan",
@@ -274,6 +282,7 @@ class ManagerAgent:
 			"stage": "plan",
 			"plan": state.plan,
 			"plan_actions": [a.to_dict() for a in plan_result.actions],
+			"raw": plan_result.raw,
 			"source": "planning-agent",
 		})
 		return state
@@ -427,6 +436,13 @@ class ManagerAgent:
 		return None
 
 	@staticmethod
+	def _fallback_plan_from_report(report: Any) -> Dict[str, bool]:
+		return {
+			"refine_hands": bool(getattr(report.hands, "distorted", False)),
+			"restore_accessories": bool(getattr(report.accessories, "missing", False)),
+		}
+
+	@staticmethod
 	def _map_plan_actions_to_flags(plan_result) -> Dict[str, bool]:
 		"""Map PlanningAgent actions into ExecutionAgent boolean flags."""
 		flags = {
@@ -434,10 +450,23 @@ class ManagerAgent:
 			"restore_accessories": False,
 		}
 		for item in plan_result.actions:
-			action = str(getattr(item, "action", "")).lower()
-			if any(token in action for token in ("hand", "finger", "palm", "pose")):
+			action = str(getattr(item, "action", "")).strip().lower().replace("-", "_").replace(" ", "_")
+			if action in {
+				"refine_hands",
+				"hand_refinement",
+				"fix_hands",
+				"fix_hand",
+				"repair_hands",
+				"repair_hand",
+			}:
 				flags["refine_hands"] = True
-			if any(token in action for token in ("accessor", "watch", "ring", "bracelet", "necklace", "earring")):
+			if action in {
+				"restore_accessories",
+				"accessory_restoration",
+				"restore_accessory",
+				"fix_accessories",
+				"fix_accessory",
+			}:
 				flags["restore_accessories"] = True
 		return flags
 

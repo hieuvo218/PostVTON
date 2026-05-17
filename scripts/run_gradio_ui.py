@@ -14,6 +14,7 @@ Requirements:
 from __future__ import annotations
 
 import os
+import json
 import uuid
 from pathlib import Path
 from typing import Optional, Tuple
@@ -79,6 +80,96 @@ def _pick_candidate_paths(candidate_outputs: Optional[dict]) -> Tuple[Optional[s
     return cat_path, oot_path
 
 
+def _build_run_summary(state) -> str:
+    """Build a concise human-readable summary from ManagerState."""
+    lines = []
+    workflow_mode = getattr(state, "workflow_mode", None)
+    if workflow_mode:
+        lines.append(f"Workflow mode: {workflow_mode}")
+
+    tryon_result = getattr(state, "tryon_result", None)
+    if tryon_result is not None:
+        lines.append(f"Try-on success: {bool(getattr(tryon_result, 'success', False))}")
+        model_used = getattr(tryon_result, "model_used", None)
+        if model_used:
+            lines.append(f"Selected try-on model: {model_used}")
+        pose_score = getattr(tryon_result, "pose_score", None)
+        if pose_score is not None:
+            lines.append(f"Selected pose score: {float(pose_score):.4f}")
+
+    plan_event = None
+    detect_event = None
+    for event in getattr(state, "history", []) or []:
+        if not isinstance(event, dict):
+            continue
+        if event.get("stage") == "detect":
+            detect_event = event
+        elif event.get("stage") == "plan":
+            plan_event = event
+
+    if detect_event is None:
+        lines.append("Defect report: not run")
+    else:
+        report = detect_event.get("report")
+        if isinstance(report, dict):
+            lines.append("Defect report:")
+            lines.append(json.dumps(report, indent=2, ensure_ascii=False))
+        else:
+            lines.append(f"Defect report: {report}")
+
+    if plan_event is None:
+        lines.append("Planner: not run")
+    else:
+        source = plan_event.get("source", "unknown")
+        lines.append(f"Planner: {source}")
+        planning_error = plan_event.get("planning_error")
+        if planning_error:
+            lines.append(f"Planner error: {planning_error}")
+        plan = plan_event.get("plan")
+        if isinstance(plan, dict):
+            lines.append(
+                "Plan flags: "
+                f"refine_hands={bool(plan.get('refine_hands'))}, "
+                f"restore_accessories={bool(plan.get('restore_accessories'))}"
+            )
+        actions = plan_event.get("plan_actions")
+        if actions:
+            lines.append("Planner actions:")
+            for idx, item in enumerate(actions, start=1):
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action", ""))
+                justification = str(item.get("justification", ""))
+                fallback = str(item.get("fallback", ""))
+                lines.append(f"{idx}. action: {action}")
+                if justification:
+                    lines.append(f"   justification: {justification}")
+                if fallback:
+                    lines.append(f"   fallback: {fallback}")
+        raw_plan = plan_event.get("raw")
+        if raw_plan:
+            lines.append("Raw planner output:")
+            lines.append(str(raw_plan))
+
+    execution_result = getattr(state, "execution_result", None)
+    if execution_result is None:
+        lines.append("Execution: not run")
+    else:
+        lines.append(f"Execution success: {bool(getattr(execution_result, 'success', False))}")
+        error = getattr(execution_result, "error", None)
+        if error:
+            lines.append(f"Execution error: {error}")
+        steps = getattr(execution_result, "steps", []) or []
+        if steps:
+            step_names = [
+                f"{getattr(step, 'name', 'unknown')}={bool(getattr(step, 'success', False))}"
+                for step in steps
+            ]
+            lines.append(f"Execution steps: {', '.join(step_names)}")
+
+    return "\n".join(lines)
+
+
 def run_postvton(
     person_image_path: str,
     cloth_image_path: str,
@@ -125,7 +216,7 @@ def run_postvton(
     cat_path, oot_path = _pick_candidate_paths(getattr(state, "tryon_candidate_outputs", None))
     final_path = str(final_output_path)
 
-    return cat_path, oot_path, final_path
+    return cat_path, oot_path, final_path, _build_run_summary(state)
 
 
 def _build_examples():
@@ -194,6 +285,11 @@ def build_ui() -> gr.Blocks:
                     catvton_out = gr.Image(label="CatVTON Output", type="filepath")
                     oot_out = gr.Image(label="OOTDiffusion Output", type="filepath")
                 final_out = gr.Image(label="Final Edited Output", type="filepath")
+                run_summary = gr.Textbox(
+                    label="Run Summary",
+                    lines=10,
+                    interactive=False,
+                )
 
         run_btn.click(
             fn=run_postvton,
@@ -208,7 +304,7 @@ def build_ui() -> gr.Blocks:
                 max_iterations,
                 num_inference_step,
             ],
-            outputs=[catvton_out, oot_out, final_out],
+            outputs=[catvton_out, oot_out, final_out, run_summary],
         )
 
         if examples:
@@ -225,7 +321,7 @@ def build_ui() -> gr.Blocks:
                     max_iterations,
                     num_inference_step,
                 ],
-                outputs=[catvton_out, oot_out, final_out],
+                outputs=[catvton_out, oot_out, final_out, run_summary],
                 fn=run_postvton,
                 cache_examples=False,
             )
