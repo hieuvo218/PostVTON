@@ -28,7 +28,9 @@ except Exception as exc:  # pragma: no cover
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _OUTPUT_ROOT = _PROJECT_ROOT / "outputs" / "gradio_ui"
-_WORKFLOW_MODE_CHOICES = [
+
+
+WORKFLOW_MODE_CHOICES = [
     "Whole workflow",
     "Pose only",
     "Pose + accessory edit",
@@ -51,13 +53,13 @@ def _map_cloth_type(ui_value: str) -> str:
 
 
 def _map_workflow_mode(ui_value: str) -> str:
-    """Map UI workflow mode -> pipeline workflow mode."""
-    value = (ui_value or "").strip().lower()
-    if value == "pose only":
+    """Map UI workflow mode -> PostVTON workflow_mode."""
+    v = (ui_value or "").strip().lower()
+    if v == "pose only":
         return "pose_only"
-    if "accessory" in value:
+    if v == "pose + accessory edit":
         return "pose_accessory_edit"
-    if "hand" in value:
+    if v == "pose + hand fix":
         return "pose_hand_fix"
     return "whole_workflow"
 
@@ -110,6 +112,7 @@ def run_postvton(
         model_image_path=person_image_path,
         garment_image_path=cloth_image_path,
         cloth_type=_map_cloth_type(cloth_type),
+        workflow_mode=_map_workflow_mode(workflow_mode),
         api_keys=[key] if key else [],
         tryon_server_url=server_url or None,
         output_dir=str(out_dir),
@@ -117,7 +120,6 @@ def run_postvton(
         device=(device or "cuda"),
         max_iterations=int(max_iterations),
         num_inference_steps=int(num_inference_step),
-        workflow_mode=_map_workflow_mode(workflow_mode),
     )
 
     cat_path, oot_path = _pick_candidate_paths(getattr(state, "tryon_candidate_outputs", None))
@@ -168,7 +170,7 @@ def build_ui() -> gr.Blocks:
                 cloth_image = gr.Image(label="Clothing Image", type="filepath")
                 cloth_type = gr.Radio(["Upper", "Lower", "Dress"], value="Upper", label="Cloth Type")
                 workflow_mode = gr.Radio(
-                    _WORKFLOW_MODE_CHOICES,
+                    WORKFLOW_MODE_CHOICES,
                     value="Whole workflow",
                     label="Workflow Mode",
                 )
