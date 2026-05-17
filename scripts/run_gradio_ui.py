@@ -19,6 +19,8 @@ import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
+import numpy as _np
+
 try:
     import gradio as gr
 except Exception as exc:  # pragma: no cover
@@ -113,7 +115,19 @@ def _build_run_summary(state) -> str:
         report = detect_event.get("report")
         if isinstance(report, dict):
             lines.append("Defect report:")
-            lines.append(json.dumps(report, indent=2, ensure_ascii=False))
+            # Use a safe JSON dumper to handle numpy scalars/arrays that are
+            # not directly JSON serializable (e.g. numpy.int64).
+            def _json_default(o):
+                try:
+                    if isinstance(o, _np.generic):
+                        return o.item()
+                    if isinstance(o, _np.ndarray):
+                        return o.tolist()
+                except Exception:
+                    pass
+                return str(o)
+
+            lines.append(json.dumps(report, indent=2, ensure_ascii=False, default=_json_default))
         else:
             lines.append(f"Defect report: {report}")
 
@@ -176,7 +190,8 @@ def _build_run_summary(state) -> str:
                     lines.append(f"   error: {step_error}")
                 detail = getattr(step, "detail", None)
                 if detail:
-                    lines.append(json.dumps(detail, indent=2, ensure_ascii=False))
+                    # Use the same safe dumper for step details.
+                    lines.append(json.dumps(detail, indent=2, ensure_ascii=False, default=_json_default))
 
     return "\n".join(lines)
 
