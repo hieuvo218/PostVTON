@@ -109,6 +109,7 @@ Editing prompt rules:
 - Preserve original pose and composition.
 - Preserve clothing and identity.
 - Keep prompt short and direct.
+- Always ask the model to edit only the hand area, never the whole image.
 
 Return ONLY valid JSON:
 
