@@ -103,7 +103,7 @@ class MissingAccessoryDetector:
 
     DEFAULT_CLASSES: List[str] = [
     "ring", "necklace", "bracelet",
-    "handbag", "shoulder bag",
+    "handbag", "shoulder bag", "earring", "watch",
     "neckband", "sling", "strap", "icebag",
 ]
 
