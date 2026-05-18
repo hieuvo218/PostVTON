@@ -301,11 +301,41 @@ class ManagerAgent:
 
 		plan = state.plan or self._workflow_mode_plan(state.workflow_mode)
 		executor = ExecutionAgent()
+
+		# Pass hand refinement prompt from detection report when available.
+		hand_params = {}
+		if getattr(state, "detection_report", None) is not None:
+			try:
+				edit_prompt = getattr(state.detection_report, "edit_prompt", None)
+				# fall back to dict form if dataclass-like object doesn't expose attribute
+				if not edit_prompt and hasattr(state.detection_report, "to_dict"):
+					report_dict = state.detection_report.to_dict()
+					edit_prompt = report_dict.get("edit_prompt")
+				if edit_prompt:
+					hand_params["edit_prompt"] = edit_prompt
+			except Exception:
+				pass
+
+		# Allow detection to override planning: if hands are detected as distorted,
+		# force refine_hands to True regardless of planner output.
+		refine_flag = bool(plan.get("refine_hands", False))
+		try:
+			if getattr(state, "detection_report", None) is not None:
+				det_distorted = getattr(state.detection_report, "distorted", None)
+				if det_distorted is None and hasattr(state.detection_report, "to_dict"):
+					det_distorted = state.detection_report.to_dict().get("distorted")
+				if bool(det_distorted):
+					refine_flag = True
+		except Exception:
+			# If anything goes wrong inspecting the report, keep planner decision.
+			pass
+
 		result = executor.execute(
 			original_image=state.person_image_pil,
 			tryon_image=state.tryon_image_pil,
-			refine_hands=plan.get("refine_hands", False),
+			refine_hands=refine_flag,
 			restore_accessories=plan.get("restore_accessories", False),
+			hand_params=hand_params,
 		)
 		state.execution_result = result
 		if result.success and result.final_image is not None:
