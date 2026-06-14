@@ -10,6 +10,19 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 import json
 import logging
+import os
+
+try:
+	from dotenv import load_dotenv
+except Exception:
+	load_dotenv = None
+
+try:
+	from google import genai
+	from google.genai import types as genai_types
+except Exception:
+	genai = None
+	genai_types = None
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +78,27 @@ class PlanningAgent:
 	}
 	"""
 
-	def __init__(self, llm: Optional[Callable[[str], str]] = None):
-		self.llm = llm
+	def __init__(
+		self,
+		llm: Optional[Callable[[str], str]] = None,
+		model_id: str = "gemini-3.1-flash-lite-preview",
+	):
+		if load_dotenv is not None:
+			try:
+				load_dotenv()
+			except Exception:
+				pass
+
+		self.model_id = model_id
+		self._gemini_client = None
+		if llm is not None:
+			self.llm = llm
+		else:
+			api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+			if api_key and genai is not None and genai_types is not None:
+				self.llm = self._gemini_llm
+			else:
+				self.llm = None
 
 	def build_graph(self):
 		try:
@@ -85,7 +117,9 @@ class PlanningAgent:
 
 	def run(self, report: Dict[str, Any]) -> PlanResult:
 		if self.llm is None:
-			raise ValueError("PlanningAgent requires an LLM callable.")
+			raise ValueError(
+				"PlanningAgent requires an LLM callable or GEMINI_API_KEY/GOOGLE_API_KEY with google-genai installed."
+			)
 		graph = self.build_graph()
 		initial_state = PlanningState(report=report)
 		result = graph.invoke(initial_state)
@@ -157,4 +191,25 @@ class PlanningAgent:
 			return PlanResult(raw=raw, error="No valid actions found in plan")
 
 		return PlanResult(actions=actions, raw=raw)
+
+	def _gemini_llm(self, prompt: str) -> str:
+		api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+		if not api_key:
+			raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Gemini planning.")
+		if genai is None or genai_types is None:
+			raise ImportError("google-genai is required for Gemini planning.")
+
+		if self._gemini_client is None:
+			self._gemini_client = genai.Client(api_key=api_key)
+
+		response = self._gemini_client.models.generate_content(
+			model=self.model_id,
+			contents=[prompt],
+			config=genai_types.GenerateContentConfig(
+				temperature=0.2,
+				response_mime_type="application/json",
+			),
+		)
+		text = getattr(response, "text", None)
+		return text if isinstance(text, str) else str(text or response)
 

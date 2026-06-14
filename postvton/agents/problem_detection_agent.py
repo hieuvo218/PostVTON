@@ -57,11 +57,13 @@ class HandsReport:
 	"""Hand detection summary."""
 	distorted: bool
 	analysis: str = ""
+	edit_prompt: str = ""
 
 	def to_dict(self) -> dict:
 		return {
 			"distorted": self.distorted,
 			"analysis": self.analysis,
+			"edit_prompt": self.edit_prompt,
 		}
 
 
@@ -161,6 +163,7 @@ class ProblemDetectionAgent:
 		hands_report = HandsReport(
 			distorted=hand_result.distorted,
 			analysis=hand_result.reason or hand_result.description or "",
+			edit_prompt=hand_result.edit_prompt or "",
 		)
 
 		# ---- Accessory detection (always on) ----

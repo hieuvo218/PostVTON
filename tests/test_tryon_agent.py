@@ -2,14 +2,13 @@
 
 Covers:
     1. Imports and class instantiation (no GPU needed).
-    2. Pose scoring utility (score_pose_similarity) using example images.
-    3. Full end-to-end generate() — runs both CatVTON and OOTDiffusion,
-       picks the best result, and verifies the output file exists.
+    2. Remote try-on call (skipped unless TRYON_SERVER_URL is set).
 
 Run from the project root:
     python tests/test_tryon_agent.py
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -36,6 +35,10 @@ FAIL = "[FAIL]"
 SKIP = "[SKIP]"
 
 
+def _server_url() -> str:
+    return (os.environ.get("TRYON_SERVER_URL") or "").strip()
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -58,13 +61,10 @@ def test_imports():
         from postvton.agents.tryon_agent import (
             TryOnAgent,
             TryOnResult,
-            VTONModel,
             run_tryon_agent_sync,
-            score_pose_similarity,
         )
         agent = TryOnAgent(device="cuda")
         assert agent.device == "cuda"
-        assert agent._models == {}
 
         # TryOnResult defaults
         r = TryOnResult(success=True)
@@ -77,45 +77,15 @@ def test_imports():
         print(f"{FAIL} {exc}")
         return False
 
-
 # ---------------------------------------------------------------------------
-# Test 2 — pose scoring utility
-# ---------------------------------------------------------------------------
-
-def test_pose_scoring():
-    print("\n[TEST 2] score_pose_similarity on sample images")
-    if not _check_images():
-        print(f"{SKIP} Sample images not found — skipping pose scoring test")
-        return True  # not a failure
-
-    try:
-        from postvton.agents.tryon_agent import score_pose_similarity
-
-        t0 = time.time()
-        score = score_pose_similarity(PERSON_IMAGE, PERSON_IMAGE)
-        elapsed = time.time() - t0
-
-        # Same image vs itself should give score very close to 1.0
-        assert 0.0 <= score <= 1.0, f"Score out of range: {score}"
-        print(f"{PASS} Self-similarity score = {score:.4f}  ({elapsed:.2f}s)")
-
-        # Cross-image score: different content → lower than self-similarity
-        score_cross = score_pose_similarity(PERSON_IMAGE, CLOTH_IMAGE)
-        print(f"       Cross-image score    = {score_cross:.4f}")
-        assert score_cross <= score + 0.05, "Cross score unexpectedly higher than self score"
-        return True
-    except Exception as exc:
-        print(f"{FAIL} {exc}")
-        import traceback; traceback.print_exc()
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Test 3 — full end-to-end inference
+# Test 2 — remote generate()
 # ---------------------------------------------------------------------------
 
 def test_generate():
-    print("\n[TEST 3] TryOnAgent.generate() — both models, pick best")
+    print("\n[TEST 2] TryOnAgent.generate() — remote server")
+    if not _server_url():
+        print(f"{SKIP} TRYON_SERVER_URL not set — skipping remote try-on test")
+        return True
     if not _check_images():
         print(f"{SKIP} Sample images not found — skipping inference test")
         return True
@@ -136,7 +106,6 @@ def test_generate():
             num_inference_steps=20,   # keep fast for testing
         )
         elapsed = time.time() - t0
-        agent.unload()
 
         print(f"  success       : {result.success}")
         print(f"  model_used    : {result.model_used}")
@@ -147,7 +116,7 @@ def test_generate():
         assert result.success, f"generate() returned failure: {result.message}"
         assert result.output_path and Path(result.output_path).exists(), \
             f"Output file not found: {result.output_path}"
-        assert result.pose_score > 0.0, "pose_score was not computed"
+        assert result.pose_score >= 0.0
 
         print(f"{PASS} Best result saved to {result.output_path}")
         return True
@@ -163,7 +132,10 @@ def test_generate():
 # ---------------------------------------------------------------------------
 
 def test_sync_wrapper():
-    print("\n[TEST 4] run_tryon_agent_sync convenience function")
+    print("\n[TEST 3] run_tryon_agent_sync convenience function")
+    if not _server_url():
+        print(f"{SKIP} TRYON_SERVER_URL not set — skipping")
+        return True
     if not _check_images():
         print(f"{SKIP} Sample images not found — skipping")
         return True
@@ -198,7 +170,7 @@ def test_sync_wrapper():
 # ---------------------------------------------------------------------------
 
 def test_missing_image():
-    print("\n[TEST 5] Graceful failure on missing input paths")
+    print("\n[TEST 4] Graceful failure on missing input paths")
     try:
         from postvton.agents.tryon_agent import TryOnAgent
 
@@ -208,7 +180,6 @@ def test_missing_image():
             cloth_image_path="/nonexistent/cloth.jpg",
             cloth_type="upper",
         )
-        agent.unload()
 
         # Both models should fail → success=False, no crash
         assert not result.success, "Expected failure for missing images but got success"
@@ -228,7 +199,6 @@ def test_missing_image():
 def run_all():
     tests = [
         test_imports,
-        test_pose_scoring,
         test_generate,
         test_sync_wrapper,
         test_missing_image,

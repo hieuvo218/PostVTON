@@ -23,7 +23,7 @@ class CatVTONInference:
     
     def __init__(
         self,
-        base_model_path: str = "stable-diffusion-v1-5/stable-diffusion-inpainting",
+        base_model_path: str = "runwayml/stable-diffusion-inpainting",
         resume_path: str = "zhengchong/CatVTON",
         dataset_name: str = "dresscode",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -173,7 +173,7 @@ class CatVTONInference:
         
         # Run inference
         try:
-            print("[CatVTON] Running inference...")
+            print(f"[CatVTON] Running inference with {num_inference_steps} steps...")
             with torch.no_grad():
                 result = self._pipeline(
                     image=person_image,

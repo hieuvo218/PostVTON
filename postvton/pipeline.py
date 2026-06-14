@@ -71,10 +71,13 @@ def run_pipeline(
 	garment_image_path: str,
 	cloth_type: str = "upper",
 	api_keys: Optional[Sequence[str]] = None,
+	tryon_server_url: Optional[str] = None,
 	output_dir: str = "output",
 	output_name: Optional[str] = None,
 	device: str = "cuda",
 	max_iterations: int = 2,
+	num_inference_steps: int = 5,
+	workflow_mode: str = "whole_workflow",
 ) -> Tuple[Path, ManagerState]:
 	"""Run full virtual try-on orchestration and save the final image.
 
@@ -87,6 +90,8 @@ def run_pipeline(
 		output_name: Optional explicit filename (".png" appended if missing).
 		device: Device hint for model components ("cuda" or "cpu").
 		max_iterations: Manager refinement loop upper bound.
+		workflow_mode: Workflow preset: whole_workflow, pose_only,
+			pose_accessory_edit, or pose_hand_fix.
 
 	Returns:
 		Tuple of (saved_output_path, final_manager_state).
@@ -102,8 +107,11 @@ def run_pipeline(
 		cloth_image=cloth_image,
 		cloth_type=cloth_type,
 		api_keys=list(api_keys or []),
+		tryon_server_url=tryon_server_url,
 		output_path=str(final_output_path),
 		output_dir=output_dir,
+		num_inference_steps=num_inference_steps,
+		workflow_mode=workflow_mode,
 	)
 
 	if not final_output_path.exists():
@@ -123,10 +131,22 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--garment-image", required=True, help="Path to garment image")
 	parser.add_argument("--cloth-type", default="upper", help="Garment category")
 	parser.add_argument("--api-keys", default="", help="Comma-separated API keys")
+	parser.add_argument(
+		"--tryon-server-url",
+		default="",
+		help="Optional FastAPI try-on server base URL (empty = local try-on)",
+	)
 	parser.add_argument("--output-dir", default="output", help="Directory to save final output")
 	parser.add_argument("--output-name", default=None, help="Optional output filename")
 	parser.add_argument("--device", default="cuda", help="Device: cuda or cpu")
 	parser.add_argument("--max-iterations", type=int, default=2, help="Manager refinement loop cap")
+	parser.add_argument("--num-inference-steps", type=int, default=5, help="Denoising steps for CatVTON/OOTDiffusion")
+	parser.add_argument(
+		"--workflow-mode",
+		default="whole_workflow",
+		choices=["whole_workflow", "pose_only", "pose_accessory_edit", "pose_hand_fix"],
+		help="Workflow mode to run",
+	)
 	return parser
 
 
@@ -141,10 +161,13 @@ def main() -> int:
 			garment_image_path=args.garment_image,
 			cloth_type=args.cloth_type,
 			api_keys=_parse_api_keys(args.api_keys),
+			tryon_server_url=args.tryon_server_url.strip() or None,
 			output_dir=args.output_dir,
 			output_name=args.output_name,
 			device=args.device,
 			max_iterations=args.max_iterations,
+			num_inference_steps=args.num_inference_steps,
+			workflow_mode=args.workflow_mode,
 		)
 	except (FileNotFoundError, ValueError, RuntimeError) as exc:
 		print(f"[ERROR] {exc}")

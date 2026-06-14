@@ -507,10 +507,10 @@ def test_bad_api_key():
 # ---------------------------------------------------------------------------
 
 def test_live_detection():
-    print("\n[TEST 14] Live two-image detect() with real HF_TOKEN")
-    api_key = os.environ.get("HF_TOKEN")
+    print("\n[TEST 14] Live two-image detect() with real Gemini key")
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        print(f"{SKIP} HF_TOKEN not set — skipping live test")
+        print(f"{SKIP} GEMINI_API_KEY/GOOGLE_API_KEY not set — skipping live test")
         return True
     if not _sample_exists():
         print(f"{SKIP} Sample image not found — skipping live test")

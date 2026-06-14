@@ -1,14 +1,19 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 import logging
 
-import numpy as np
 import torch
 from PIL import Image
-from diffusers import QwenImageEditPipeline
-from skimage.exposure import match_histograms
 
 logger = logging.getLogger(__name__)
+
+try:
+    from diffusers import QwenImageEditPipeline
+except ImportError as exc:
+    QwenImageEditPipeline = None
+    _QWEN_IMPORT_ERROR = exc
+else:
+    _QWEN_IMPORT_ERROR = None
 
 
 DEFAULT_PROMPT = (
@@ -25,6 +30,7 @@ class HandRefinementResult:
     output_image: Optional[Image.Image]
     image_size: Optional[tuple[int, int]] = None
     error: Optional[str] = None
+    detail: dict[str, Any] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -32,6 +38,7 @@ class HandRefinementResult:
             "output_image": self.output_image is not None,
             "image_size": list(self.image_size) if self.image_size else None,
             "error": self.error,
+            "detail": dict(self.detail or {}),
         }
 
 
@@ -58,28 +65,26 @@ class HandRefiner:
         else:
             self.torch_dtype = torch.float32
         self.disable_progress_bar = disable_progress_bar
-        self._pipeline: Optional[QwenImageEditPipeline] = None
+        self._pipeline: Optional["QwenImageEditPipeline"] = None
 
     def refine(
         self,
         image: Image.Image,
-        prompt: str = DEFAULT_PROMPT,
-        negative_prompt: str = "",
         num_inference_steps: int = 15,
         true_cfg_scale: float = 3.0,
         seed: Optional[int] = 0,
-        apply_histogram_matching: bool = True,
+        edit_prompt: Optional[str] = None,
+        **kwargs,
     ) -> HandRefinementResult:
-        """Run hand refinement and return a refined PIL image.
+        """Run hand refinement using Qwen image editor on the full image.
 
         Args:
             image: Input PIL image.
-            prompt: Editing prompt passed to Qwen image editor.
-            negative_prompt: Negative prompt for guidance.
             num_inference_steps: Diffusion inference steps.
             true_cfg_scale: Classifier-free guidance scale.
             seed: Random seed for reproducibility. If None, stochastic run.
-            apply_histogram_matching: Match output color histogram to input.
+            edit_prompt: Optional custom prompt from hand detection. Uses DEFAULT_PROMPT if None.
+            **kwargs: Ignored; for backward compatibility with old callers.
         """
         try:
             if not isinstance(image, Image.Image):
@@ -90,35 +95,23 @@ class HandRefiner:
                 )
 
             input_img = image.convert("RGB")
-
             width, height = input_img.size
-            pipeline = self._get_pipeline()
+            prompt = edit_prompt or DEFAULT_PROMPT
 
-            generator = None
-            if seed is not None:
-                generator = torch.Generator(device=self.device).manual_seed(seed)
-
-            payload = {
-                "image": input_img,
-                "prompt": prompt,
-                "negative_prompt": negative_prompt,
-                "num_inference_steps": num_inference_steps,
-                "true_cfg_scale": true_cfg_scale,
-                "generator": generator,
-            }
-
-            with torch.inference_mode():
-                output = pipeline(**payload)
-
-            refined = output.images[0].resize((width, height), Image.LANCZOS)
-
-            if apply_histogram_matching:
-                refined = self._match_histograms(refined, input_img)
+            refined = self._run_qwen_edit(
+                image=input_img,
+                prompt=prompt,
+                negative_prompt="",
+                num_inference_steps=num_inference_steps,
+                true_cfg_scale=true_cfg_scale,
+                seed=seed,
+            ).resize((width, height), Image.LANCZOS)
 
             return HandRefinementResult(
                 success=True,
                 output_image=refined,
                 image_size=(width, height),
+                detail={"mode": "qwen_full_image"},
             )
         except Exception as exc:
             logger.exception("Hand refinement failed")
@@ -128,7 +121,43 @@ class HandRefiner:
                 error=str(exc),
             )
 
-    def _get_pipeline(self) -> QwenImageEditPipeline:
+    def _run_qwen_edit(
+        self,
+        image: Image.Image,
+        prompt: str,
+        negative_prompt: str,
+        num_inference_steps: int,
+        true_cfg_scale: float,
+        seed: Optional[int],
+    ) -> Image.Image:
+        width, height = image.size
+        pipeline = self._get_pipeline()
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        payload = {
+            "image": image.convert("RGB"),
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "num_inference_steps": num_inference_steps,
+            "true_cfg_scale": true_cfg_scale,
+            "generator": generator,
+        }
+
+        with torch.inference_mode():
+            output = pipeline(**payload)
+
+        return output.images[0].resize((width, height), Image.LANCZOS)
+
+    def _get_pipeline(self) -> "QwenImageEditPipeline":
+        if QwenImageEditPipeline is None:
+            raise ImportError(
+                "QwenImageEditPipeline is unavailable. Install Qwen-capable "
+                "Diffusers dependencies with: pip install -U -r requirements.system.txt"
+            ) from _QWEN_IMPORT_ERROR
+
         if self._pipeline is None:
             logger.info("Loading QwenImageEditPipeline from %s", self.model_path)
             pipe = QwenImageEditPipeline.from_pretrained(
@@ -140,34 +169,36 @@ class HandRefiner:
             self._pipeline = pipe
         return self._pipeline
 
-    @staticmethod
-    def _match_histograms(output_image: Image.Image, reference_image: Image.Image) -> Image.Image:
-        out_np = np.array(output_image)
-        ref_np = np.array(reference_image)
-        matched = match_histograms(out_np, ref_np, channel_axis=-1)
-        matched = np.clip(matched, 0, 255).astype(np.uint8)
-        return Image.fromarray(matched)
-
 
 def refine_hands(
     image: Image.Image,
     model_path: str = "ovedrive/qwen-image-edit-4bit",
     device: Optional[str] = None,
-    prompt: str = DEFAULT_PROMPT,
-    negative_prompt: str = "",
     num_inference_steps: int = 15,
     true_cfg_scale: float = 3.0,
     seed: Optional[int] = 0,
-    apply_histogram_matching: bool = True,
+    edit_prompt: Optional[str] = None,
+    **kwargs,
 ) -> HandRefinementResult:
-    """One-shot hand refinement API."""
+    """One-shot hand refinement API using Qwen image editor on full image.
+    
+    Args:
+        image: Input PIL image.
+        model_path: Path to Qwen model.
+        device: Device to use (cuda/cpu).
+        num_inference_steps: Diffusion steps.
+        true_cfg_scale: Classifier-free guidance scale.
+        seed: Random seed.
+        edit_prompt: Optional custom prompt from hand detection.
+        **kwargs: Additional arguments for backward compatibility.
+    """
     refiner = HandRefiner(model_path=model_path, device=device)
     return refiner.refine(
         image=image,
-        prompt=prompt,
-        negative_prompt=negative_prompt,
         num_inference_steps=num_inference_steps,
         true_cfg_scale=true_cfg_scale,
         seed=seed,
-        apply_histogram_matching=apply_histogram_matching,
+        edit_prompt=edit_prompt,
+        **kwargs,
     )
+
