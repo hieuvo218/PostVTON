@@ -9,7 +9,7 @@ To the best of our knowledge, this work is the first to apply agentic reasoning 
   <img width="1385" height="547"
        src="https://github.com/user-attachments/assets/338acca1-cd25-4fd6-81cd-4b604409272f" />
   <br>
-  <em>Figure 1: PostVTON framework: A multi-agent system designed to enhance the results of virtual try-on models, featuring coordinated agents for management, evaluation, problem detection,
+  <em>Figure 1: PostVTON framework: A multi-agent system designed to enhance the results of virtual try-on models, featuring coordinated agents for management, evaluation, problem detection,
 planning, and correction.</em>
 </p>
 
