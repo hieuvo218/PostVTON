@@ -3,6 +3,12 @@ Virtual Try-on systems have achieved remarkable progress in fitting new garments
 
 To the best of our knowledge, this work is the first to apply agentic reasoning to postprocessing in virtual try-on systems, highlighting the potential of intelligent multi-agent collaboration for controllable image refinement.
 
+## Publication / Presentation
+
+- **Conference:** ICT 2026 National Conference on Information and Communication Technology in the Era of Artificial Intelligence and Comprehensive Digital Transformation
+- **Paper:** *POSTVTON: An Agentic System for Virtual Try-On Quality Control*
+- **Status:** Accepted / Presented
+
 # PostVTON
 ## Framework Overview (Diagram)
 <p align="center">
