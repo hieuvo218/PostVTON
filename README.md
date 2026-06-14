@@ -67,10 +67,10 @@ On the UI machine (can be the same machine):
 
 # Results
 ## Module-Level Latency Analysis
-<img width="1317" height="723" alt="image" src="https://github.com/user-attachments/assets/0b254d8a-49b4-4ed9-9ad2-734590717d6c" />
+<img width="800" height="500" alt="image" src="https://github.com/user-attachments/assets/0b254d8a-49b4-4ed9-9ad2-734590717d6c" />
 
 ## Quantitative Results
-<img width="1333" height="368" alt="image" src="https://github.com/user-attachments/assets/dd34a9c0-400e-417d-b203-a7a6b20dec96" />
+<img width="800" height="200" alt="image" src="https://github.com/user-attachments/assets/dd34a9c0-400e-417d-b203-a7a6b20dec96" />
 
 ## Qualitative Results
-<img width="1333" height="368" alt="image" src="https://github.com/user-attachments/assets/d6c15dee-74ea-4d8f-b181-4c5e5e38be20" />
+<img width="800" height="200" alt="image" src="https://github.com/user-attachments/assets/d6c15dee-74ea-4d8f-b181-4c5e5e38be20" />
